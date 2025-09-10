@@ -9,7 +9,7 @@ import logging
 import os
 from functools import wraps
 
-from utils.database_manager import database_manager
+from utils.database_manager import db_manager as database_manager
 from utils.rollback_manager import rollback_manager
 from utils.monitoring import monitoring_manager
 from config.environment import env_manager

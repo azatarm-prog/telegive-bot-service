@@ -561,3 +561,6 @@ def init_database_manager(db):
     db_manager = DatabaseManager(db)
     return db_manager
 
+# Export for compatibility
+database_manager = db_manager
+
