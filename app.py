@@ -130,8 +130,7 @@ def create_app(config_override=None):
     from utils.database_manager import init_database_manager
     init_database_manager(db)
     
-    # Application startup tasks
-    @app.before_first_request
+    # Application startup tasks (using modern Flask approach)
     def startup_tasks():
         """Tasks to run on application startup"""
         logger.info("Performing startup tasks...")
@@ -156,6 +155,10 @@ def create_app(config_override=None):
             logger.info("Database tables verified/created")
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
+    
+    # Run startup tasks immediately during app creation
+    with app.app_context():
+        startup_tasks()
     
     # Application shutdown tasks
     @app.teardown_appcontext
