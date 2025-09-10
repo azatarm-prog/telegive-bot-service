@@ -1,9 +1,8 @@
 """
-Step 3: Add Telegram bot integration
+Step 2: Add API endpoints and webhook functionality
 """
 import os
 import json
-import requests
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
@@ -34,11 +33,10 @@ class HealthCheck(db.Model):
 class BotRegistration(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     bot_id = db.Column(db.String(100), unique=True, nullable=False)
-    bot_token = db.Column(db.Text, nullable=False)  # In production, this would be encrypted
+    bot_token_encrypted = db.Column(db.Text, nullable=False)
     user_id = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
-    webhook_set = db.Column(db.Boolean, default=False)
 
 class WebhookLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -46,70 +44,16 @@ class WebhookLog(db.Model):
     webhook_data = db.Column(db.Text, nullable=False)
     processed_at = db.Column(db.DateTime, default=datetime.utcnow)
     status = db.Column(db.String(50), default='received')
-    response_sent = db.Column(db.Text)
-
-class MessageLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    bot_id = db.Column(db.String(100), nullable=False)
-    chat_id = db.Column(db.String(100), nullable=False)
-    message_text = db.Column(db.Text)
-    message_type = db.Column(db.String(50))
-    user_id = db.Column(db.String(100))
-    username = db.Column(db.String(100))
-    processed_at = db.Column(db.DateTime, default=datetime.utcnow)
-    bot_response = db.Column(db.Text)
-
-# Telegram API Helper Class
-class TelegramBot:
-    def __init__(self, bot_token):
-        self.bot_token = bot_token
-        self.base_url = f"https://api.telegram.org/bot{bot_token}"
-    
-    def send_message(self, chat_id, text, reply_markup=None):
-        """Send a message to a chat"""
-        url = f"{self.base_url}/sendMessage"
-        data = {
-            'chat_id': chat_id,
-            'text': text
-        }
-        if reply_markup:
-            data['reply_markup'] = json.dumps(reply_markup)
-        
-        try:
-            response = requests.post(url, json=data, timeout=10)
-            return response.json()
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-    
-    def set_webhook(self, webhook_url):
-        """Set webhook for the bot"""
-        url = f"{self.base_url}/setWebhook"
-        data = {'url': webhook_url}
-        
-        try:
-            response = requests.post(url, json=data, timeout=10)
-            return response.json()
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
-    
-    def get_me(self):
-        """Get bot information"""
-        url = f"{self.base_url}/getMe"
-        try:
-            response = requests.get(url, timeout=10)
-            return response.json()
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
 
 # Basic routes
 @app.route('/')
 def hello():
     return jsonify({
         'status': 'working',
-        'message': 'Step 3: Flask app with Telegram bot integration',
+        'message': 'Step 2: Flask app with API endpoints and webhooks',
         'service': 'telegive-bot-service',
-        'step': 3,
-        'features': ['basic_flask', 'database_support', 'api_endpoints', 'webhook_handling', 'telegram_integration']
+        'step': 2,
+        'features': ['basic_flask', 'database_support', 'api_endpoints', 'webhook_handling']
     })
 
 @app.route('/health')
@@ -117,7 +61,7 @@ def health():
     health_data = {
         'status': 'healthy',
         'service': 'telegive-bot-service',
-        'step': 3,
+        'step': 2,
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
     
@@ -131,14 +75,12 @@ def health():
         record_count = HealthCheck.query.count()
         bot_count = BotRegistration.query.count()
         webhook_count = WebhookLog.query.count()
-        message_count = MessageLog.query.count()
         
         health_data['database'] = {
             'status': 'connected',
             'health_records': record_count,
             'registered_bots': bot_count,
             'webhook_logs': webhook_count,
-            'message_logs': message_count,
             'url_configured': bool(os.environ.get('DATABASE_URL'))
         }
         
@@ -164,8 +106,7 @@ def list_bots():
                 'bot_id': bot.bot_id,
                 'user_id': bot.user_id,
                 'created_at': bot.created_at.isoformat(),
-                'is_active': bot.is_active,
-                'webhook_set': bot.webhook_set
+                'is_active': bot.is_active
             })
         
         return jsonify({
@@ -182,61 +123,39 @@ def list_bots():
 
 @app.route('/api/bots/register', methods=['POST'])
 def register_bot():
-    """Register a new bot with Telegram token"""
+    """Register a new bot"""
     try:
         data = request.get_json()
         
-        if not data or 'bot_token' not in data or 'user_id' not in data:
+        if not data or 'bot_id' not in data or 'user_id' not in data:
             return jsonify({
                 'status': 'error',
-                'error': 'Missing required fields: bot_token, user_id'
+                'error': 'Missing required fields: bot_id, user_id'
             }), 400
-        
-        # Validate bot token by calling Telegram API
-        telegram_bot = TelegramBot(data['bot_token'])
-        bot_info = telegram_bot.get_me()
-        
-        if not bot_info.get('ok'):
-            return jsonify({
-                'status': 'error',
-                'error': 'Invalid bot token'
-            }), 400
-        
-        bot_id = bot_info['result']['username']
         
         # Check if bot already exists
-        existing_bot = BotRegistration.query.filter_by(bot_id=bot_id).first()
+        existing_bot = BotRegistration.query.filter_by(bot_id=data['bot_id']).first()
         if existing_bot:
             return jsonify({
                 'status': 'error',
                 'error': 'Bot already registered'
             }), 409
         
-        # Create new bot registration
+        # Create new bot registration (token would be encrypted in production)
         new_bot = BotRegistration(
-            bot_id=bot_id,
-            bot_token=data['bot_token'],
+            bot_id=data['bot_id'],
+            bot_token_encrypted='encrypted_token_placeholder',  # Would encrypt actual token
             user_id=data['user_id']
         )
         
         db.session.add(new_bot)
         db.session.commit()
         
-        # Set webhook
-        webhook_url = f"https://{request.host}/webhook/{bot_id}"
-        webhook_result = telegram_bot.set_webhook(webhook_url)
-        
-        if webhook_result.get('ok'):
-            new_bot.webhook_set = True
-            db.session.commit()
-        
         return jsonify({
             'status': 'success',
             'message': 'Bot registered successfully',
-            'bot_id': bot_id,
-            'bot_info': bot_info['result'],
-            'webhook_url': webhook_url,
-            'webhook_set': webhook_result.get('ok', False)
+            'bot_id': data['bot_id'],
+            'webhook_url': f"https://{request.host}/webhook/{data['bot_id']}"
         }), 201
         
     except Exception as e:
@@ -301,8 +220,17 @@ def webhook_handler(bot_id):
         db.session.add(webhook_log)
         db.session.commit()
         
-        # Process message
-        response_data = process_telegram_message(bot, webhook_data, webhook_log)
+        # Process webhook (placeholder for actual processing)
+        response_data = {
+            'status': 'processed',
+            'bot_id': bot_id,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'message_type': webhook_data.get('message', {}).get('text', 'unknown')
+        }
+        
+        # Update webhook log status
+        webhook_log.status = 'processed'
+        db.session.commit()
         
         return jsonify(response_data)
         
@@ -311,73 +239,6 @@ def webhook_handler(bot_id):
             'status': 'error',
             'error': str(e)
         }), 500
-
-def process_telegram_message(bot, webhook_data, webhook_log):
-    """Process incoming Telegram message"""
-    try:
-        telegram_bot = TelegramBot(bot.bot_token)
-        
-        # Extract message data
-        message = webhook_data.get('message', {})
-        chat_id = message.get('chat', {}).get('id')
-        text = message.get('text', '')
-        user = message.get('from', {})
-        user_id = user.get('id')
-        username = user.get('username', '')
-        
-        if not chat_id:
-            return {'status': 'ignored', 'reason': 'No chat_id found'}
-        
-        # Log message
-        message_log = MessageLog(
-            bot_id=bot.bot_id,
-            chat_id=str(chat_id),
-            message_text=text,
-            message_type='text' if text else 'other',
-            user_id=str(user_id) if user_id else None,
-            username=username
-        )
-        db.session.add(message_log)
-        
-        # Process commands
-        response_text = None
-        if text.startswith('/start'):
-            response_text = f"Hello {username or 'there'}! Welcome to the Telegive Bot Service. This bot is now connected and working!"
-        elif text.startswith('/help'):
-            response_text = "Available commands:\n/start - Start the bot\n/help - Show this help\n/status - Check bot status"
-        elif text.startswith('/status'):
-            response_text = f"Bot Status: Active\nBot ID: {bot.bot_id}\nService: Telegive Bot Service Step 3"
-        else:
-            response_text = f"You said: {text}\n\nThis is a test response from the Telegive Bot Service (Step 3)."
-        
-        # Send response
-        if response_text:
-            send_result = telegram_bot.send_message(chat_id, response_text)
-            message_log.bot_response = json.dumps(send_result)
-        
-        # Update logs
-        db.session.commit()
-        webhook_log.status = 'processed'
-        webhook_log.response_sent = response_text
-        db.session.commit()
-        
-        return {
-            'status': 'processed',
-            'bot_id': bot.bot_id,
-            'chat_id': chat_id,
-            'message_type': text[:50] if text else 'non-text',
-            'response_sent': bool(response_text),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }
-        
-    except Exception as e:
-        webhook_log.status = 'error'
-        db.session.commit()
-        return {
-            'status': 'error',
-            'error': str(e),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }
 
 @app.route('/api/webhooks/<bot_id>/logs', methods=['GET'])
 def get_webhook_logs(bot_id):
@@ -391,40 +252,7 @@ def get_webhook_logs(bot_id):
                 'id': log.id,
                 'processed_at': log.processed_at.isoformat(),
                 'status': log.status,
-                'response_sent': log.response_sent,
                 'webhook_data': json.loads(log.webhook_data)
-            })
-        
-        return jsonify({
-            'status': 'success',
-            'bot_id': bot_id,
-            'logs': log_list,
-            'total': len(log_list)
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'error': str(e)
-        }), 500
-
-@app.route('/api/messages/<bot_id>/logs', methods=['GET'])
-def get_message_logs(bot_id):
-    """Get message logs for a specific bot"""
-    try:
-        logs = MessageLog.query.filter_by(bot_id=bot_id).order_by(MessageLog.processed_at.desc()).limit(20).all()
-        
-        log_list = []
-        for log in logs:
-            log_list.append({
-                'id': log.id,
-                'chat_id': log.chat_id,
-                'message_text': log.message_text,
-                'message_type': log.message_type,
-                'user_id': log.user_id,
-                'username': log.username,
-                'processed_at': log.processed_at.isoformat(),
-                'bot_response': log.bot_response
             })
         
         return jsonify({
