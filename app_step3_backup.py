@@ -1,5 +1,5 @@
 """
-Step 4: Add service-to-service communication
+Step 3: Add Telegram bot integration
 """
 import os
 import json
@@ -7,7 +7,6 @@ import requests
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
-from urllib.parse import urljoin
 
 app = Flask(__name__)
 
@@ -23,13 +22,6 @@ else:
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
-# Service URLs configuration
-SERVICE_URLS = {
-    'auth': os.environ.get('AUTH_SERVICE_URL', 'https://web-production-ddd7e.up.railway.app'),
-    'channel': os.environ.get('CHANNEL_SERVICE_URL', 'https://telegive-channel-service.railway.app'),
-    'participant': os.environ.get('PARTICIPANT_SERVICE_URL', 'https://telegive-participant-production.up.railway.app')
-}
-
 # Initialize database
 db = SQLAlchemy(app)
 
@@ -42,7 +34,7 @@ class HealthCheck(db.Model):
 class BotRegistration(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     bot_id = db.Column(db.String(100), unique=True, nullable=False)
-    bot_token = db.Column(db.Text, nullable=False)
+    bot_token = db.Column(db.Text, nullable=False)  # In production, this would be encrypted
     user_id = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
@@ -66,83 +58,6 @@ class MessageLog(db.Model):
     username = db.Column(db.String(100))
     processed_at = db.Column(db.DateTime, default=datetime.utcnow)
     bot_response = db.Column(db.Text)
-
-class ServiceInteraction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    service_name = db.Column(db.String(50), nullable=False)
-    endpoint = db.Column(db.String(200), nullable=False)
-    request_data = db.Column(db.Text)
-    response_data = db.Column(db.Text)
-    status_code = db.Column(db.Integer)
-    success = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.String(100))
-
-# Service Communication Helper
-class ServiceClient:
-    def __init__(self):
-        self.timeout = 10
-        self.headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Telegive-Bot-Service/1.0'
-        }
-    
-    def call_service(self, service_name, endpoint, method='GET', data=None, user_id=None):
-        """Make a call to another service"""
-        try:
-            base_url = SERVICE_URLS.get(service_name)
-            if not base_url:
-                return {'success': False, 'error': f'Service {service_name} not configured'}
-            
-            url = urljoin(base_url, endpoint)
-            
-            # Log the interaction
-            interaction = ServiceInteraction(
-                service_name=service_name,
-                endpoint=endpoint,
-                request_data=json.dumps(data) if data else None,
-                user_id=user_id
-            )
-            
-            if method.upper() == 'GET':
-                response = requests.get(url, headers=self.headers, timeout=self.timeout)
-            elif method.upper() == 'POST':
-                response = requests.post(url, headers=self.headers, json=data, timeout=self.timeout)
-            elif method.upper() == 'PUT':
-                response = requests.put(url, headers=self.headers, json=data, timeout=self.timeout)
-            elif method.upper() == 'DELETE':
-                response = requests.delete(url, headers=self.headers, timeout=self.timeout)
-            else:
-                return {'success': False, 'error': f'Unsupported method: {method}'}
-            
-            # Update interaction log
-            interaction.status_code = response.status_code
-            interaction.response_data = response.text
-            interaction.success = response.status_code < 400
-            
-            db.session.add(interaction)
-            db.session.commit()
-            
-            if response.status_code < 400:
-                try:
-                    return {'success': True, 'data': response.json(), 'status_code': response.status_code}
-                except:
-                    return {'success': True, 'data': response.text, 'status_code': response.status_code}
-            else:
-                return {'success': False, 'error': f'HTTP {response.status_code}', 'response': response.text}
-                
-        except requests.exceptions.Timeout:
-            interaction.success = False
-            interaction.response_data = 'Timeout'
-            db.session.add(interaction)
-            db.session.commit()
-            return {'success': False, 'error': 'Service timeout'}
-        except Exception as e:
-            interaction.success = False
-            interaction.response_data = str(e)
-            db.session.add(interaction)
-            db.session.commit()
-            return {'success': False, 'error': str(e)}
 
 # Telegram API Helper Class
 class TelegramBot:
@@ -186,19 +101,15 @@ class TelegramBot:
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
-# Initialize service client
-service_client = ServiceClient()
-
 # Basic routes
 @app.route('/')
 def hello():
     return jsonify({
         'status': 'working',
-        'message': 'Step 4: Flask app with service-to-service communication',
+        'message': 'Step 3: Flask app with Telegram bot integration',
         'service': 'telegive-bot-service',
-        'step': 4,
-        'features': ['basic_flask', 'database_support', 'api_endpoints', 'webhook_handling', 'telegram_integration', 'service_communication'],
-        'connected_services': list(SERVICE_URLS.keys())
+        'step': 3,
+        'features': ['basic_flask', 'database_support', 'api_endpoints', 'webhook_handling', 'telegram_integration']
     })
 
 @app.route('/health')
@@ -206,7 +117,7 @@ def health():
     health_data = {
         'status': 'healthy',
         'service': 'telegive-bot-service',
-        'step': 4,
+        'step': 3,
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
     
@@ -221,7 +132,6 @@ def health():
         bot_count = BotRegistration.query.count()
         webhook_count = WebhookLog.query.count()
         message_count = MessageLog.query.count()
-        service_interaction_count = ServiceInteraction.query.count()
         
         health_data['database'] = {
             'status': 'connected',
@@ -229,26 +139,8 @@ def health():
             'registered_bots': bot_count,
             'webhook_logs': webhook_count,
             'message_logs': message_count,
-            'service_interactions': service_interaction_count,
             'url_configured': bool(os.environ.get('DATABASE_URL'))
         }
-        
-        # Test service connectivity
-        health_data['services'] = {}
-        for service_name, service_url in SERVICE_URLS.items():
-            try:
-                response = requests.get(f"{service_url}/health", timeout=5)
-                health_data['services'][service_name] = {
-                    'url': service_url,
-                    'status': 'reachable' if response.status_code < 400 else 'error',
-                    'response_time': response.elapsed.total_seconds()
-                }
-            except:
-                health_data['services'][service_name] = {
-                    'url': service_url,
-                    'status': 'unreachable',
-                    'response_time': None
-                }
         
     except Exception as e:
         health_data['database'] = {
@@ -259,55 +151,27 @@ def health():
     
     return jsonify(health_data)
 
-# Service integration endpoints
-@app.route('/api/services/test', methods=['POST'])
-def test_service_communication():
-    """Test communication with other services"""
+# API Endpoints
+@app.route('/api/bots', methods=['GET'])
+def list_bots():
+    """List registered bots"""
     try:
-        data = request.get_json() or {}
-        service_name = data.get('service', 'auth')
-        endpoint = data.get('endpoint', '/health')
-        method = data.get('method', 'GET')
-        payload = data.get('data')
+        bots = BotRegistration.query.filter_by(is_active=True).all()
+        bot_list = []
         
-        result = service_client.call_service(service_name, endpoint, method, payload)
-        
-        return jsonify({
-            'status': 'success',
-            'service': service_name,
-            'endpoint': endpoint,
-            'result': result
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'error': str(e)
-        }), 500
-
-@app.route('/api/services/interactions', methods=['GET'])
-def get_service_interactions():
-    """Get recent service interactions"""
-    try:
-        limit = request.args.get('limit', 20, type=int)
-        interactions = ServiceInteraction.query.order_by(ServiceInteraction.created_at.desc()).limit(limit).all()
-        
-        interaction_list = []
-        for interaction in interactions:
-            interaction_list.append({
-                'id': interaction.id,
-                'service_name': interaction.service_name,
-                'endpoint': interaction.endpoint,
-                'status_code': interaction.status_code,
-                'success': interaction.success,
-                'created_at': interaction.created_at.isoformat(),
-                'user_id': interaction.user_id
+        for bot in bots:
+            bot_list.append({
+                'bot_id': bot.bot_id,
+                'user_id': bot.user_id,
+                'created_at': bot.created_at.isoformat(),
+                'is_active': bot.is_active,
+                'webhook_set': bot.webhook_set
             })
         
         return jsonify({
             'status': 'success',
-            'interactions': interaction_list,
-            'total': len(interaction_list)
+            'bots': bot_list,
+            'total': len(bot_list)
         })
         
     except Exception as e:
@@ -316,10 +180,9 @@ def get_service_interactions():
             'error': str(e)
         }), 500
 
-# Enhanced bot registration with service integration
 @app.route('/api/bots/register', methods=['POST'])
 def register_bot():
-    """Register a new bot with Telegram token and service integration"""
+    """Register a new bot with Telegram token"""
     try:
         data = request.get_json()
         
@@ -328,11 +191,6 @@ def register_bot():
                 'status': 'error',
                 'error': 'Missing required fields: bot_token, user_id'
             }), 400
-        
-        user_id = data['user_id']
-        
-        # Validate user with auth service
-        auth_result = service_client.call_service('auth', f'/api/users/{user_id}', 'GET', user_id=user_id)
         
         # Validate bot token by calling Telegram API
         telegram_bot = TelegramBot(data['bot_token'])
@@ -358,7 +216,7 @@ def register_bot():
         new_bot = BotRegistration(
             bot_id=bot_id,
             bot_token=data['bot_token'],
-            user_id=user_id
+            user_id=data['user_id']
         )
         
         db.session.add(new_bot)
@@ -378,38 +236,8 @@ def register_bot():
             'bot_id': bot_id,
             'bot_info': bot_info['result'],
             'webhook_url': webhook_url,
-            'webhook_set': webhook_result.get('ok', False),
-            'auth_service_check': auth_result.get('success', False)
+            'webhook_set': webhook_result.get('ok', False)
         }), 201
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'error': str(e)
-        }), 500
-
-# API Endpoints (existing ones)
-@app.route('/api/bots', methods=['GET'])
-def list_bots():
-    """List registered bots"""
-    try:
-        bots = BotRegistration.query.filter_by(is_active=True).all()
-        bot_list = []
-        
-        for bot in bots:
-            bot_list.append({
-                'bot_id': bot.bot_id,
-                'user_id': bot.user_id,
-                'created_at': bot.created_at.isoformat(),
-                'is_active': bot.is_active,
-                'webhook_set': bot.webhook_set
-            })
-        
-        return jsonify({
-            'status': 'success',
-            'bots': bot_list,
-            'total': len(bot_list)
-        })
         
     except Exception as e:
         return jsonify({
@@ -443,10 +271,10 @@ def unregister_bot(bot_id):
             'error': str(e)
         }), 500
 
-# Enhanced webhook handler with service integration
+# Webhook endpoints
 @app.route('/webhook/<bot_id>', methods=['POST'])
 def webhook_handler(bot_id):
-    """Handle Telegram webhook for specific bot with service integration"""
+    """Handle Telegram webhook for specific bot"""
     try:
         # Verify bot exists
         bot = BotRegistration.query.filter_by(bot_id=bot_id, is_active=True).first()
@@ -473,8 +301,8 @@ def webhook_handler(bot_id):
         db.session.add(webhook_log)
         db.session.commit()
         
-        # Process message with service integration
-        response_data = process_telegram_message_with_services(bot, webhook_data, webhook_log)
+        # Process message
+        response_data = process_telegram_message(bot, webhook_data, webhook_log)
         
         return jsonify(response_data)
         
@@ -484,8 +312,8 @@ def webhook_handler(bot_id):
             'error': str(e)
         }), 500
 
-def process_telegram_message_with_services(bot, webhook_data, webhook_log):
-    """Process incoming Telegram message with service integration"""
+def process_telegram_message(bot, webhook_data, webhook_log):
+    """Process incoming Telegram message"""
     try:
         telegram_bot = TelegramBot(bot.bot_token)
         
@@ -511,63 +339,21 @@ def process_telegram_message_with_services(bot, webhook_data, webhook_log):
         )
         db.session.add(message_log)
         
-        # Process commands with service integration
+        # Process commands
         response_text = None
-        service_data = {}
-        
         if text.startswith('/start'):
-            response_text = f"Hello {username or 'there'}! Welcome to the Telegive Bot Service with full service integration!"
-            
-            # Check user with auth service
-            auth_result = service_client.call_service('auth', f'/api/users/{user_id}', 'GET', user_id=str(user_id))
-            service_data['auth_check'] = auth_result
-            
+            response_text = f"Hello {username or 'there'}! Welcome to the Telegive Bot Service. This bot is now connected and working!"
         elif text.startswith('/help'):
-            response_text = """Available commands:
-/start - Start the bot
-/help - Show this help
-/status - Check bot status
-/channels - List your channels
-/participants - Check participants"""
-            
+            response_text = "Available commands:\n/start - Start the bot\n/help - Show this help\n/status - Check bot status"
         elif text.startswith('/status'):
-            response_text = f"Bot Status: Active\nBot ID: {bot.bot_id}\nService: Telegive Bot Service Step 4\nServices: Connected"
-            
-        elif text.startswith('/channels'):
-            # Get user channels from channel service
-            channels_result = service_client.call_service('channel', f'/api/channels/user/{user_id}', 'GET', user_id=str(user_id))
-            service_data['channels'] = channels_result
-            
-            if channels_result.get('success'):
-                channels = channels_result.get('data', {}).get('channels', [])
-                if channels:
-                    response_text = f"Your channels ({len(channels)}):\n" + "\n".join([f"• {ch.get('name', 'Unknown')}" for ch in channels[:5]])
-                else:
-                    response_text = "You don't have any channels yet."
-            else:
-                response_text = "Unable to fetch channels at the moment."
-                
-        elif text.startswith('/participants'):
-            # Get participants from participant service
-            participants_result = service_client.call_service('participant', f'/api/participants/user/{user_id}', 'GET', user_id=str(user_id))
-            service_data['participants'] = participants_result
-            
-            if participants_result.get('success'):
-                participants = participants_result.get('data', {}).get('participants', [])
-                response_text = f"Total participants: {len(participants)}"
-            else:
-                response_text = "Unable to fetch participants at the moment."
-                
+            response_text = f"Bot Status: Active\nBot ID: {bot.bot_id}\nService: Telegive Bot Service Step 3"
         else:
-            response_text = f"You said: {text}\n\nThis is a test response from the Telegive Bot Service (Step 4) with service integration."
+            response_text = f"You said: {text}\n\nThis is a test response from the Telegive Bot Service (Step 3)."
         
         # Send response
         if response_text:
             send_result = telegram_bot.send_message(chat_id, response_text)
-            message_log.bot_response = json.dumps({
-                'telegram_response': send_result,
-                'service_data': service_data
-            })
+            message_log.bot_response = json.dumps(send_result)
         
         # Update logs
         db.session.commit()
@@ -581,7 +367,6 @@ def process_telegram_message_with_services(bot, webhook_data, webhook_log):
             'chat_id': chat_id,
             'message_type': text[:50] if text else 'non-text',
             'response_sent': bool(response_text),
-            'services_called': list(service_data.keys()),
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
@@ -594,7 +379,6 @@ def process_telegram_message_with_services(bot, webhook_data, webhook_log):
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
-# Existing endpoints
 @app.route('/api/webhooks/<bot_id>/logs', methods=['GET'])
 def get_webhook_logs(bot_id):
     """Get webhook logs for a specific bot"""
