@@ -43,9 +43,21 @@ class RollbackPlan:
 class BackupManager:
     """Manages backups for rollback purposes"""
     
-    def __init__(self, backup_base_path: str = "/var/backups/telegive-bot"):
+    def __init__(self, backup_base_path: str = None):
+        if backup_base_path is None:
+            # Use /tmp for Railway deployment, /var/backups for local
+            backup_base_path = os.getenv('BACKUP_BASE_PATH', '/tmp/telegive-bot-backups')
+        
         self.backup_base_path = Path(backup_base_path)
-        self.backup_base_path.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            self.backup_base_path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to /tmp if permission denied
+            fallback_path = '/tmp/telegive-bot-backups'
+            logger.warning(f"Permission denied for {backup_base_path}, using fallback: {fallback_path}")
+            self.backup_base_path = Path(fallback_path)
+            self.backup_base_path.mkdir(parents=True, exist_ok=True)
         
     def create_database_backup(self, snapshot_id: str) -> Optional[str]:
         """Create a database backup"""
