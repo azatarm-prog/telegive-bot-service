@@ -1,2 +1,2 @@
-web: python app_ultra_minimal.py
+web: python app_step1_database.py
 
