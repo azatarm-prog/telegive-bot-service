@@ -1,2 +1,2 @@
-web: python app_fixed.py
+web: python app_ultra_minimal.py
 
