@@ -11,7 +11,6 @@ from utils.user_state import (
 )
 from utils.message_sender import send_dm_message
 from utils.keyboard_builder import extract_callback_data, build_continue_keyboard
-from utils.webhook_handler import log_bot_interaction
 from services.participant_service import (
     register_participation, check_participation_status, 
     validate_captcha, get_captcha_question, check_winner_status
@@ -61,19 +60,8 @@ def handle_callback_query(callback_query: Dict[str, Any], bot_token: str) -> Dic
         else:
             result = handle_unknown_callback(user_id, action, bot_token)
         
-        # Log interaction
-        log_bot_interaction(
-            user_id=user_id,
-            interaction_type='callback_query',
-            callback_data=callback_data,
-            response_sent=result.get('response_text'),
-            success=result.get('success', True),
-            error_message=result.get('error'),
-            chat_id=chat_id,
-            message_id=message_id,
-            from_channel=from_channel,
-            giveaway_id=params[0] if params and params[0].isdigit() else None
-        )
+        # Note: Bot interaction logging is handled at the webhook level
+        # to avoid circular imports
         
         return result
         

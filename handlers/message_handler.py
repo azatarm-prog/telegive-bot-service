@@ -11,7 +11,6 @@ from utils.user_state import (
 )
 from utils.message_sender import send_dm_message
 from utils.keyboard_builder import build_continue_keyboard
-from utils.webhook_handler import log_bot_interaction
 from services.participant_service import validate_captcha, get_captcha_question
 
 logger = logging.getLogger(__name__)
@@ -54,18 +53,8 @@ def handle_message(message: Dict[str, Any], bot_token: str) -> Dict[str, Any]:
         else:
             result = handle_general_message(user_id, text, bot_token)
         
-        # Log interaction
-        log_bot_interaction(
-            user_id=user_id,
-            interaction_type='message',
-            message_text=text,
-            response_sent=result.get('response_text'),
-            success=result.get('success', True),
-            error_message=result.get('error'),
-            chat_id=chat_id,
-            message_id=message_id,
-            processing_time_ms=result.get('processing_time_ms')
-        )
+        # Note: Bot interaction logging is handled at the webhook level
+        # to avoid circular imports
         
         return result
         
