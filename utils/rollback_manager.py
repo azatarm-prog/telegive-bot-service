@@ -243,8 +243,20 @@ class RollbackManager:
     
     def __init__(self):
         self.backup_manager = BackupManager()
-        self.snapshots_file = Path("/var/lib/telegive-bot/deployment_snapshots.json")
-        self.snapshots_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Use environment variable or fallback to /tmp for Railway deployment
+        snapshots_dir = os.getenv('SNAPSHOTS_DIR', '/tmp/telegive-bot-snapshots')
+        self.snapshots_file = Path(snapshots_dir) / "deployment_snapshots.json"
+        
+        try:
+            self.snapshots_file.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to /tmp if permission denied
+            fallback_dir = '/tmp/telegive-bot-snapshots'
+            logger.warning(f"Permission denied for {snapshots_dir}, using fallback: {fallback_dir}")
+            self.snapshots_file = Path(fallback_dir) / "deployment_snapshots.json"
+            self.snapshots_file.parent.mkdir(parents=True, exist_ok=True)
+            
         self.snapshots: Dict[str, DeploymentSnapshot] = self._load_snapshots()
     
     def _load_snapshots(self) -> Dict[str, DeploymentSnapshot]:
