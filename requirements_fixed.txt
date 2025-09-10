@@ -1,4 +1,4 @@
-# Minimal stable requirements for Railway deployment
+# Fixed requirements for Railway deployment
 Flask==2.3.3
 Flask-SQLAlchemy==3.0.5
 psycopg2-binary==2.9.7
