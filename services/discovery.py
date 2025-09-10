@@ -5,7 +5,7 @@ Provides automatic service discovery, health monitoring, and failover capabiliti
 
 import requests
 import logging
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import threading
