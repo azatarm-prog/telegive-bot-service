@@ -1,255 +1,317 @@
-#!/usr/bin/env python3
 """
-Telegive Bot Service - Main Application
-Enhanced with environment management, service discovery, comprehensive error handling,
-logging, and monitoring
+Step 2: Add API endpoints and webhook functionality
 """
-
 import os
-import logging
-import logging.config
-import time
-import uuid
-from flask import Flask, jsonify, request, g
+import json
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
 from datetime import datetime, timezone
 
-# Import configuration and utilities
-from config.environment import env_manager
-from utils.error_handler import ErrorHandler
-from utils.logging_config import configure_logging, log_request, get_logger
-from utils.monitoring import start_monitoring, stop_monitoring, get_performance_monitor
-from services.discovery import service_discovery
+app = Flask(__name__)
 
-# Configure logging first
-configure_logging()
-logger = get_logger(__name__)
+# Database configuration
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fallback.db'
 
-# Initialize Flask app
-def create_app(config_override=None):
-    """Application factory pattern"""
-    app = Flask(__name__)
-    
-    # Load configuration from environment manager
-    flask_config = env_manager.get_flask_config()
-    if config_override:
-        flask_config.update(config_override)
-    
-    app.config.update(flask_config)
-    
-    logger.info(f"Starting {env_manager.get('SERVICE_NAME')} in {env_manager.env.value} environment")
-    
-    # Initialize database
-    from models import db
-    db.init_app(app)
-    
-    # Initialize error handler
-    error_handler = ErrorHandler()
-    error_handler.init_app(app)
-    
-    # Configure CORS
-    CORS(app, resources={
-        r"/api/*": {
-            "origins": [
-                "https://telegive-frontend.vercel.app",
-                "http://localhost:3000",
-                "https://localhost:3000"
-            ],
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
-            "supports_credentials": True
-        },
-        r"/health/*": {
-            "origins": "*",
-            "methods": ["GET"]
-        },
-        r"/webhook/*": {
-            "origins": "*",
-            "methods": ["POST"]
-        }
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+
+# Initialize database
+db = SQLAlchemy(app)
+
+# Models
+class HealthCheck(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default='healthy')
+
+class BotRegistration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    bot_id = db.Column(db.String(100), unique=True, nullable=False)
+    bot_token_encrypted = db.Column(db.Text, nullable=False)
+    user_id = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+
+class WebhookLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    bot_id = db.Column(db.String(100), nullable=False)
+    webhook_data = db.Column(db.Text, nullable=False)
+    processed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default='received')
+
+# Basic routes
+@app.route('/')
+def hello():
+    return jsonify({
+        'status': 'working',
+        'message': 'Step 2: Flask app with API endpoints and webhooks',
+        'service': 'telegive-bot-service',
+        'step': 2,
+        'features': ['basic_flask', 'database_support', 'api_endpoints', 'webhook_handling']
     })
-    
-    # Request tracking middleware
-    @app.before_request
-    def before_request():
-        """Set up request tracking"""
-        g.request_id = str(uuid.uuid4())
-        g.start_time = time.time()
-        
-        # Log request start
-        logger.info("Request started", extra={
-            'component': 'http_request',
-            'request_id': g.request_id,
-            'method': request.method,
-            'path': request.path,
-            'remote_addr': request.remote_addr,
-            'user_agent': request.headers.get('User-Agent')
-        })
-    
-    @app.after_request
-    def after_request(response):
-        """Log request completion and metrics"""
-        if hasattr(g, 'start_time'):
-            duration = time.time() - g.start_time
-            
-            # Log request completion
-            log_request(request, response, duration)
-            
-            # Record performance metrics
-            performance_monitor = get_performance_monitor()
-            performance_monitor.record_request_metrics(
-                method=request.method,
-                path=request.path,
-                status_code=response.status_code,
-                duration=duration
-            )
-        
-        # Add request ID to response headers
-        if hasattr(g, 'request_id'):
-            response.headers['X-Request-ID'] = g.request_id
-        
-        return response
-    
-    # Import and register blueprints
-    from routes.webhook import webhook_bp
-    from routes.bot_api import bot_api_bp
-    from routes.health import health_bp
-    from routes.admin import admin_bp
-    
-    app.register_blueprint(webhook_bp, url_prefix='/webhook')
-    app.register_blueprint(bot_api_bp, url_prefix='/api')
-    app.register_blueprint(health_bp)
-    app.register_blueprint(admin_bp, url_prefix='/admin')
-    
-    # Set database reference for health routes
-    from routes import health
-    health.db = db
-    
-    # Initialize database manager
-    from utils.database_manager import init_database_manager
-    init_database_manager(db)
-    
-    # Application startup tasks (using modern Flask approach)
-    def startup_tasks():
-        """Tasks to run on application startup"""
-        logger.info("Performing startup tasks...")
-        
-        # Validate runtime configuration
-        config_issues = env_manager.validate_runtime_config()
-        if config_issues:
-            logger.warning(f"Configuration issues detected: {config_issues}")
-        
-        # Start monitoring
-        start_monitoring()
-        logger.info("Monitoring started")
-        
-        # Start service discovery monitoring
-        if not env_manager.is_development():
-            service_discovery.start_monitoring()
-            logger.info("Service discovery monitoring started")
-        
-        # Create database tables if they don't exist
-        try:
-            db.create_all()
-            logger.info("Database tables verified/created")
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-    
-    # Run startup tasks immediately during app creation
-    with app.app_context():
-        startup_tasks()
-    
-    # Application shutdown tasks
-    @app.teardown_appcontext
-    def shutdown_session(exception=None):
-        """Clean up database session"""
-        db.session.remove()
-    
-    # Graceful shutdown handler
-    def shutdown_handler():
-        """Handle graceful shutdown"""
-        logger.info("Shutting down application...")
-        
-        # Stop monitoring
-        stop_monitoring()
-        
-        # Stop service discovery
-        service_discovery.stop_monitoring()
-        
-        logger.info("Application shutdown complete")
-    
-    # Register shutdown handler
-    import atexit
-    atexit.register(shutdown_handler)
-    
-    # Root endpoint
-    @app.route('/', methods=['GET'])
-    def root():
-        """Root endpoint with service information"""
-        return jsonify({
-            'service': env_manager.get('SERVICE_NAME'),
-            'version': '1.0.0',
-            'status': 'running',
-            'environment': env_manager.env.value,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'request_id': getattr(g, 'request_id', None),
-            'endpoints': {
-                'health': '/health',
-                'api': '/api',
-                'webhook': '/webhook',
-                'admin': '/admin',
-                'metrics': '/health/metrics'
-            }
-        })
-    
-    # Service info endpoint
-    @app.route('/info', methods=['GET'])
-    def service_info():
-        """Detailed service information"""
-        return jsonify({
-            'service': env_manager.get('SERVICE_NAME'),
-            'version': '1.0.0',
-            'environment': env_manager.env.value,
-            'configuration': {
-                'service_port': env_manager.get('SERVICE_PORT'),
-                'webhook_base_url': env_manager.get('WEBHOOK_BASE_URL'),
-                'max_message_length': env_manager.get('MAX_MESSAGE_LENGTH'),
-                'bulk_message_batch_size': env_manager.get('BULK_MESSAGE_BATCH_SIZE'),
-                'message_retry_attempts': env_manager.get('MESSAGE_RETRY_ATTEMPTS'),
-                'rate_limit_per_minute': env_manager.get('RATE_LIMIT_PER_MINUTE')
-            },
-            'external_services': {
-                'configured': list(env_manager.get_all_service_urls().keys()),
-                'required': env_manager.get_required_services(),
-                'optional': env_manager.get_optional_services()
-            },
-            'monitoring': {
-                'logging_enabled': True,
-                'metrics_enabled': True,
-                'alerting_enabled': True
-            },
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'request_id': getattr(g, 'request_id', None)
-        })
-    
-    return app
 
-# Create the application instance
-app = create_app()
+@app.route('/health')
+def health():
+    health_data = {
+        'status': 'healthy',
+        'service': 'telegive-bot-service',
+        'step': 2,
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Test database connection
+    try:
+        db.create_all()
+        health_record = HealthCheck(status='healthy')
+        db.session.add(health_record)
+        db.session.commit()
+        
+        record_count = HealthCheck.query.count()
+        bot_count = BotRegistration.query.count()
+        webhook_count = WebhookLog.query.count()
+        
+        health_data['database'] = {
+            'status': 'connected',
+            'health_records': record_count,
+            'registered_bots': bot_count,
+            'webhook_logs': webhook_count,
+            'url_configured': bool(os.environ.get('DATABASE_URL'))
+        }
+        
+    except Exception as e:
+        health_data['database'] = {
+            'status': 'error',
+            'error': str(e)
+        }
+        health_data['status'] = 'degraded'
+    
+    return jsonify(health_data)
+
+# API Endpoints
+@app.route('/api/bots', methods=['GET'])
+def list_bots():
+    """List registered bots"""
+    try:
+        bots = BotRegistration.query.filter_by(is_active=True).all()
+        bot_list = []
+        
+        for bot in bots:
+            bot_list.append({
+                'bot_id': bot.bot_id,
+                'user_id': bot.user_id,
+                'created_at': bot.created_at.isoformat(),
+                'is_active': bot.is_active
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'bots': bot_list,
+            'total': len(bot_list)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/bots/register', methods=['POST'])
+def register_bot():
+    """Register a new bot"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'bot_id' not in data or 'user_id' not in data:
+            return jsonify({
+                'status': 'error',
+                'error': 'Missing required fields: bot_id, user_id'
+            }), 400
+        
+        # Check if bot already exists
+        existing_bot = BotRegistration.query.filter_by(bot_id=data['bot_id']).first()
+        if existing_bot:
+            return jsonify({
+                'status': 'error',
+                'error': 'Bot already registered'
+            }), 409
+        
+        # Create new bot registration (token would be encrypted in production)
+        new_bot = BotRegistration(
+            bot_id=data['bot_id'],
+            bot_token_encrypted='encrypted_token_placeholder',  # Would encrypt actual token
+            user_id=data['user_id']
+        )
+        
+        db.session.add(new_bot)
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Bot registered successfully',
+            'bot_id': data['bot_id'],
+            'webhook_url': f"https://{request.host}/webhook/{data['bot_id']}"
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/bots/<bot_id>', methods=['DELETE'])
+def unregister_bot(bot_id):
+    """Unregister a bot"""
+    try:
+        bot = BotRegistration.query.filter_by(bot_id=bot_id).first()
+        
+        if not bot:
+            return jsonify({
+                'status': 'error',
+                'error': 'Bot not found'
+            }), 404
+        
+        bot.is_active = False
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Bot unregistered successfully'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+# Webhook endpoints
+@app.route('/webhook/<bot_id>', methods=['POST'])
+def webhook_handler(bot_id):
+    """Handle Telegram webhook for specific bot"""
+    try:
+        # Verify bot exists
+        bot = BotRegistration.query.filter_by(bot_id=bot_id, is_active=True).first()
+        if not bot:
+            return jsonify({
+                'status': 'error',
+                'error': 'Bot not found or inactive'
+            }), 404
+        
+        # Get webhook data
+        webhook_data = request.get_json()
+        if not webhook_data:
+            return jsonify({
+                'status': 'error',
+                'error': 'No webhook data received'
+            }), 400
+        
+        # Log webhook
+        webhook_log = WebhookLog(
+            bot_id=bot_id,
+            webhook_data=json.dumps(webhook_data),
+            status='received'
+        )
+        db.session.add(webhook_log)
+        db.session.commit()
+        
+        # Process webhook (placeholder for actual processing)
+        response_data = {
+            'status': 'processed',
+            'bot_id': bot_id,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'message_type': webhook_data.get('message', {}).get('text', 'unknown')
+        }
+        
+        # Update webhook log status
+        webhook_log.status = 'processed'
+        db.session.commit()
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/webhooks/<bot_id>/logs', methods=['GET'])
+def get_webhook_logs(bot_id):
+    """Get webhook logs for a specific bot"""
+    try:
+        logs = WebhookLog.query.filter_by(bot_id=bot_id).order_by(WebhookLog.processed_at.desc()).limit(10).all()
+        
+        log_list = []
+        for log in logs:
+            log_list.append({
+                'id': log.id,
+                'processed_at': log.processed_at.isoformat(),
+                'status': log.status,
+                'webhook_data': json.loads(log.webhook_data)
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'bot_id': bot_id,
+            'logs': log_list,
+            'total': len(log_list)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+# Database test endpoint
+@app.route('/database/test')
+def database_test():
+    """Test database operations"""
+    try:
+        db.create_all()
+        
+        test_record = HealthCheck(status='test')
+        db.session.add(test_record)
+        db.session.commit()
+        
+        all_records = HealthCheck.query.all()
+        recent_records = HealthCheck.query.order_by(HealthCheck.timestamp.desc()).limit(5).all()
+        
+        return jsonify({
+            'status': 'success',
+            'total_records': len(all_records),
+            'recent_records': [
+                {
+                    'id': r.id,
+                    'timestamp': r.timestamp.isoformat(),
+                    'status': r.status
+                } for r in recent_records
+            ],
+            'database_url_set': bool(os.environ.get('DATABASE_URL'))
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'database_url_set': bool(os.environ.get('DATABASE_URL'))
+        }), 500
 
 if __name__ == '__main__':
-    # Get configuration from environment
-    port = env_manager.get('SERVICE_PORT')
-    debug = env_manager.get('FLASK_DEBUG')
+    port = int(os.environ.get('PORT', 5000))
     
-    logger.info(f"Starting {env_manager.get('SERVICE_NAME')} on port {port}")
+    # Create tables on startup
+    with app.app_context():
+        try:
+            db.create_all()
+            print("Database tables created successfully")
+        except Exception as e:
+            print(f"Database initialization warning: {e}")
     
-    # Run the application
-    app.run(
-        host='0.0.0.0',  # Listen on all interfaces for deployment
-        port=port,
-        debug=debug,
-        threaded=True
-    )
+    app.run(host='0.0.0.0', port=port)
 
