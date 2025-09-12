@@ -1,6 +1,7 @@
 """
-Telegram Bot Service - Application Context Fix
-Fixed version that properly handles Flask application context in background tasks
+Telegram Bot Service - Production Version
+Step 5: Add background tasks and comprehensive error handling
+Production-ready Telegram Bot Service with Gunicorn support
 """
 import os
 import json
@@ -185,22 +186,21 @@ class ServiceClient:
             
             response_time = time.time() - start_time
             
-            # Log interaction with app context
-            with app.app_context():
-                interaction = ServiceInteraction(
-                    service_name=service_name,
-                    endpoint=endpoint,
-                    method=method.upper(),
-                    status_code=response.status_code,
-                    response_time=response_time,
-                    success=response.status_code < 400
-                )
-                
-                if response.status_code >= 400:
-                    interaction.error_message = response.text
-                
-                db.session.add(interaction)
-                db.session.commit()
+            # Log interaction
+            interaction = ServiceInteraction(
+                service_name=service_name,
+                endpoint=endpoint,
+                method=method.upper(),
+                status_code=response.status_code,
+                response_time=response_time,
+                success=response.status_code < 400
+            )
+            
+            if response.status_code >= 400:
+                interaction.error_message = response.text
+            
+            db.session.add(interaction)
+            db.session.commit()
             
             if response.status_code < 400:
                 return {'success': True, 'data': response.json(), 'response_time': response_time}
@@ -209,32 +209,30 @@ class ServiceClient:
                 
         except requests.exceptions.Timeout:
             response_time = time.time() - start_time
-            with app.app_context():
-                interaction = ServiceInteraction(
-                    service_name=service_name,
-                    endpoint=endpoint,
-                    method=method.upper(),
-                    response_time=response_time,
-                    success=False,
-                    error_message='Timeout'
-                )
-                db.session.add(interaction)
-                db.session.commit()
+            interaction = ServiceInteraction(
+                service_name=service_name,
+                endpoint=endpoint,
+                method=method.upper(),
+                response_time=response_time,
+                success=False,
+                error_message='Timeout'
+            )
+            db.session.add(interaction)
+            db.session.commit()
             return {'success': False, 'error': 'Service timeout'}
             
         except Exception as e:
             response_time = time.time() - start_time
-            with app.app_context():
-                interaction = ServiceInteraction(
-                    service_name=service_name,
-                    endpoint=endpoint,
-                    method=method.upper(),
-                    response_time=response_time,
-                    success=False,
-                    error_message=str(e)
-                )
-                db.session.add(interaction)
-                db.session.commit()
+            interaction = ServiceInteraction(
+                service_name=service_name,
+                endpoint=endpoint,
+                method=method.upper(),
+                response_time=response_time,
+                success=False,
+                error_message=str(e)
+            )
+            db.session.add(interaction)
+            db.session.commit()
             return {'success': False, 'error': str(e)}
 
 # Initialize service client
@@ -276,10 +274,9 @@ class TelegramBot:
             logger.error(f"Failed to set webhook: {e}")
             return {'ok': False, 'error': str(e)}
 
-# Background Task Manager with proper application context
+# Background Task Manager
 class BackgroundTaskManager:
-    def __init__(self, flask_app):
-        self.app = flask_app
+    def __init__(self):
         self.running = False
         self.thread = None
     
@@ -299,29 +296,28 @@ class BackgroundTaskManager:
         logger.info("Background task manager stopped")
     
     def _process_tasks(self):
-        """Process background tasks with proper application context"""
+        """Process background tasks"""
         while self.running:
             try:
-                with self.app.app_context():
-                    # Get pending tasks
-                    tasks = BackgroundTask.query.filter_by(status='pending').limit(10).all()
-                    
-                    for task in tasks:
-                        self._execute_task(task)
-                    
-                    # Clean up old completed tasks (older than 7 days)
-                    cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
-                    old_tasks = BackgroundTask.query.filter(
-                        BackgroundTask.status.in_(['completed', 'failed']),
-                        BackgroundTask.completed_at < cutoff_date
-                    ).all()
-                    
-                    for old_task in old_tasks:
-                        db.session.delete(old_task)
-                    
-                    if old_tasks:
-                        db.session.commit()
-                        logger.info(f"Cleaned up {len(old_tasks)} old background tasks")
+                # Get pending tasks
+                tasks = BackgroundTask.query.filter_by(status='pending').limit(10).all()
+                
+                for task in tasks:
+                    self._execute_task(task)
+                
+                # Clean up old completed tasks (older than 7 days)
+                cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
+                old_tasks = BackgroundTask.query.filter(
+                    BackgroundTask.status.in_(['completed', 'failed']),
+                    BackgroundTask.completed_at < cutoff_date
+                ).all()
+                
+                for old_task in old_tasks:
+                    db.session.delete(old_task)
+                
+                if old_tasks:
+                    db.session.commit()
+                    logger.info(f"Cleaned up {len(old_tasks)} old background tasks")
                 
             except Exception as e:
                 logger.error(f"Background task processing error: {e}")
@@ -329,7 +325,7 @@ class BackgroundTaskManager:
             time.sleep(5)  # Check every 5 seconds
     
     def _execute_task(self, task):
-        """Execute a single background task within application context"""
+        """Execute a single background task"""
         try:
             task.status = 'running'
             task.started_at = datetime.now(timezone.utc)
@@ -384,6 +380,7 @@ class BackgroundTaskManager:
         
         for bot in bots:
             try:
+                telegram_bot = TelegramBot(bot.bot_token)
                 # Try to get bot info to verify token is still valid
                 response = requests.get(f"https://api.telegram.org/bot{bot.bot_token}/getMe", timeout=10)
                 
@@ -405,8 +402,8 @@ class BackgroundTaskManager:
         # For now, just log that we're checking
         logger.info("Checking for failed messages to retry")
 
-# Initialize background task manager with app context
-task_manager = BackgroundTaskManager(app)
+# Initialize background task manager
+task_manager = BackgroundTaskManager()
 
 # Routes
 @app.route('/')
@@ -415,9 +412,9 @@ def home():
     return jsonify({
         'service': 'telegive-bot-service',
         'status': 'working',
-        'version': '1.0.1-context-fixed',
+        'version': '1.0.0-production',
         'features': ['telegram_integration', 'service_communication', 'background_tasks', 'error_handling'],
-        'message': 'Production Telegram Bot Service with fixed application context',
+        'message': 'Production Telegram Bot Service with comprehensive error handling',
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
@@ -464,7 +461,6 @@ def health():
         'registered_bots': bot_count,
         'recent_errors': recent_errors,
         'background_tasks': 'running' if task_manager.running else 'stopped',
-        'context_fix': 'applied',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
     
@@ -501,7 +497,6 @@ def test_database():
                 'bot_registrations': bot_count,
                 'webhook_logs': webhook_count
             },
-            'context_fix': 'applied',
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
         
@@ -831,7 +826,7 @@ def create_background_task():
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
-# Production initialization with proper context
+# Production initialization
 def init_production_app():
     """Initialize the app for production use"""
     with app.app_context():
@@ -850,7 +845,7 @@ def init_production_app():
             
             # Start background task manager
             task_manager.start()
-            logger.info("Production initialization completed with context fix")
+            logger.info("Production initialization completed")
             
         except Exception as e:
             logger.error(f"Production initialization failed: {str(e)}")
