@@ -1,7 +1,6 @@
 """
-Bot Service Phase 6 - Push Notification System for Instant Bot Token Updates (FIXED)
+Bot Service Phase 6 - Push Notification System for Instant Bot Token Updates
 Replaces 2-minute polling with instant push notifications from Auth Service
-FIXED: Flask route decorator conflict resolved
 """
 import os
 import json
@@ -21,7 +20,6 @@ from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, Fo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 import random
-from functools import wraps
 
 # Create Flask app
 app = Flask(__name__)
@@ -191,7 +189,7 @@ class AuthenticatedServiceClient:
     def __init__(self):
         self.headers = {
             'Content-Type': 'application/json',
-            'User-Agent': 'Telegive-Bot-Service/1.1.0-phase6-push-notifications-fixed'
+            'User-Agent': 'Telegive-Bot-Service/1.1.0-phase6-push-notifications'
         }
         self.fast_timeout = 3
         self.health_timeout = 2
@@ -338,27 +336,21 @@ class AuthenticatedServiceClient:
 # Initialize authenticated service client
 service_client = AuthenticatedServiceClient()
 
-# FIXED: Create unique decorator functions to avoid Flask route conflicts
-def create_service_token_decorator(endpoint_name):
-    """Create a unique service token decorator for each endpoint"""
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            token = request.headers.get('X-Service-Token')
-            
-            if not token or token != SERVICE_TO_SERVICE_SECRET:
-                return jsonify({
-                    'success': False,
-                    'error': 'Authentication failed',
-                    'message': 'Invalid or missing service token'
-                }), 401
-            
-            return f(*args, **kwargs)
+# Push Notification Bot Token Management
+def authenticate_service_token(f):
+    """Decorator for service token authentication"""
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get('X-Service-Token')
         
-        # Make function name unique to avoid Flask conflicts
-        decorated_function.__name__ = f'{endpoint_name}_authenticated'
-        return decorated_function
-    return decorator
+        if not token or token != SERVICE_TO_SERVICE_SECRET:
+            return jsonify({
+                'success': False,
+                'error': 'Authentication failed',
+                'message': 'Invalid or missing service token'
+            }), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 def log_push_notification(source_service, notification_type, bot_id=None, bot_username=None, status='received', processing_time=None, error_message=None, request_data=None):
     """Log push notification to database"""
@@ -464,7 +456,7 @@ def get_bot_status():
         'webhook_url': WEBHOOK_URL
     }
 
-# Giveaway Helper Functions (same as previous phases - abbreviated for space)
+# Giveaway Helper Functions (same as previous phases)
 def has_user_completed_captcha_globally(user_id):
     """Check if user has completed captcha globally"""
     try:
@@ -493,15 +485,178 @@ def mark_user_captcha_completed_globally(user_id, giveaway_id=None):
         print(f"Error marking captcha completed: {e}")
         return False
 
-# Telegram Bot Handlers (abbreviated for space - same as previous phases)
+def store_captcha_challenge(user_id, challenge_data):
+    """Store captcha challenge for user"""
+    try:
+        with app.app_context():
+            # Remove existing challenge
+            CaptchaChallenge.query.filter_by(user_id=user_id).delete()
+            
+            # Create new challenge
+            challenge = CaptchaChallenge(
+                user_id=user_id,
+                giveaway_id=challenge_data['giveaway_id'],
+                answer=challenge_data['answer'],
+                attempts=challenge_data.get('attempts', 0),
+                max_attempts=challenge_data.get('max_attempts', 3)
+            )
+            db.session.add(challenge)
+            db.session.commit()
+            return True
+    except Exception as e:
+        print(f"Error storing captcha challenge: {e}")
+        return False
+
+def get_captcha_challenge(user_id):
+    """Get current captcha challenge for user"""
+    try:
+        with app.app_context():
+            challenge = CaptchaChallenge.query.filter_by(user_id=user_id).filter(
+                CaptchaChallenge.expires_at > datetime.now(timezone.utc)
+            ).first()
+            
+            if challenge:
+                return {
+                    'giveaway_id': challenge.giveaway_id,
+                    'answer': challenge.answer,
+                    'attempts': challenge.attempts,
+                    'max_attempts': challenge.max_attempts
+                }
+            return None
+    except Exception as e:
+        print(f"Error getting captcha challenge: {e}")
+        return None
+
+def update_captcha_challenge(user_id, updates):
+    """Update captcha challenge for user"""
+    try:
+        with app.app_context():
+            challenge = CaptchaChallenge.query.filter_by(user_id=user_id).first()
+            if challenge:
+                for key, value in updates.items():
+                    if hasattr(challenge, key):
+                        setattr(challenge, key, value)
+                db.session.commit()
+                return True
+            return False
+    except Exception as e:
+        print(f"Error updating captcha challenge: {e}")
+        return False
+
+def clear_captcha_challenge(user_id):
+    """Clear captcha challenge for user"""
+    try:
+        with app.app_context():
+            CaptchaChallenge.query.filter_by(user_id=user_id).delete()
+            db.session.commit()
+            return True
+    except Exception as e:
+        print(f"Error clearing captcha challenge: {e}")
+        return False
+
+def set_user_state(user_id, state, data=None):
+    """Set user state"""
+    try:
+        with app.app_context():
+            existing = UserState.query.filter_by(user_id=user_id).first()
+            if existing:
+                existing.state = state
+                existing.data = json.dumps(data) if data else None
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                user_state = UserState(
+                    user_id=user_id,
+                    state=state,
+                    data=json.dumps(data) if data else None
+                )
+                db.session.add(user_state)
+            db.session.commit()
+            return True
+    except Exception as e:
+        print(f"Error setting user state: {e}")
+        return False
+
+def get_user_state(user_id):
+    """Get user state"""
+    try:
+        with app.app_context():
+            user_state = UserState.query.filter_by(user_id=user_id).first()
+            if user_state:
+                return {
+                    'state': user_state.state,
+                    'data': json.loads(user_state.data) if user_state.data else None
+                }
+            return None
+    except Exception as e:
+        print(f"Error getting user state: {e}")
+        return None
+
+def clear_user_state(user_id):
+    """Clear user state"""
+    try:
+        with app.app_context():
+            UserState.query.filter_by(user_id=user_id).delete()
+            db.session.commit()
+            return True
+    except Exception as e:
+        print(f"Error clearing user state: {e}")
+        return False
+
+def check_user_participation(giveaway_id, user_id):
+    """Check if user already participated in giveaway"""
+    try:
+        with app.app_context():
+            participation = GiveawayParticipation.query.filter_by(
+                giveaway_id=giveaway_id,
+                user_id=user_id
+            ).first()
+            return participation is not None
+    except Exception as e:
+        print(f"Error checking user participation: {e}")
+        return False
+
+def register_user_participation(participation_data):
+    """Register user participation in giveaway"""
+    try:
+        with app.app_context():
+            participation = GiveawayParticipation(
+                giveaway_id=participation_data['giveaway_id'],
+                user_id=participation_data['user_id'],
+                username=participation_data.get('username'),
+                first_name=participation_data.get('first_name'),
+                status=participation_data.get('status', 'active')
+            )
+            db.session.add(participation)
+            db.session.commit()
+            return True
+    except Exception as e:
+        print(f"Error registering participation: {e}")
+        return False
+
+def get_participant_count(giveaway_id):
+    """Get participant count for giveaway"""
+    try:
+        with app.app_context():
+            count = GiveawayParticipation.query.filter_by(
+                giveaway_id=giveaway_id,
+                status='active'
+            ).count()
+            return count
+    except Exception as e:
+        print(f"Error getting participant count: {e}")
+        return 0
+
+# Telegram Bot Handlers (same as previous phases, but with bot availability check)
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command with giveaway and result parameters"""
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     args = context.args
     
     print(f"🎯 Start command from user {user_id} with args: {args}")
     
     if not args:
+        # Regular start command
         await update.message.reply_text(
             "🤖 Welcome to Telegive Bot!\n\n"
             "This bot handles giveaway participation. "
@@ -511,18 +666,323 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     command = args[0]
     
+    # Handle giveaway participation: /start giveaway_123
     if command.startswith('giveaway_'):
         try:
             giveaway_id = int(command.split('_')[1])
-            await update.message.reply_text(f"🎯 Processing participation for giveaway {giveaway_id}...")
+            await handle_giveaway_participation(update, context, giveaway_id)
         except (ValueError, IndexError):
             await update.message.reply_text("❌ Invalid giveaway link.")
+    
+    # Handle result checking: /start result_123
+    elif command.startswith('result_'):
+        try:
+            giveaway_id = int(command.split('_')[1])
+            await handle_result_check(update, context, giveaway_id)
+        except (ValueError, IndexError):
+            await update.message.reply_text("❌ Invalid result link.")
+    
     else:
         await update.message.reply_text("❌ Unknown command.")
 
+async def handle_giveaway_participation(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway_id: int):
+    """Handle giveaway participation flow"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    print(f"🎯 Participation attempt: user {user_id}, giveaway {giveaway_id}")
+    
+    try:
+        # 1. Get giveaway information from Channel Service
+        giveaway_result = service_client.call_service('channel', f'/api/giveaways/{giveaway_id}')
+        
+        if not giveaway_result['success']:
+            await update.message.reply_text("❌ This giveaway is no longer available.")
+            return
+        
+        giveaway = giveaway_result['data']
+        
+        if giveaway.get('status') != 'active':
+            await update.message.reply_text("❌ This giveaway is no longer active.")
+            return
+        
+        # 2. Check if user already participated
+        if check_user_participation(giveaway_id, user_id):
+            await update.message.reply_text(f"✅ You're already participating in \"{giveaway.get('title', 'this giveaway')}\"!")
+            return
+        
+        # 3. Check subscription requirement
+        await check_subscription_requirement(update, context, giveaway)
+        
+    except Exception as e:
+        print(f"❌ Participation error: {e}")
+        await update.message.reply_text("❌ Error processing participation. Please try again.")
+
+async def check_subscription_requirement(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway):
+    """Check if user is subscribed to required channel"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    giveaway_id = giveaway['id']
+    
+    print(f"📺 Checking subscription requirement for user {user_id}")
+    
+    try:
+        # Get channel configuration from Channel Service
+        channel_result = service_client.call_service('channel', f'/api/giveaways/{giveaway_id}/channel')
+        
+        if not channel_result['success']:
+            await update.message.reply_text("❌ Unable to verify channel requirements.")
+            return
+        
+        channel_config = channel_result['data']
+        channel_username = channel_config.get('channel_username')
+        
+        if not channel_username:
+            # No channel requirement, proceed to captcha
+            await check_captcha_requirement(update, context, giveaway)
+            return
+        
+        # Check user membership using bot
+        try:
+            member = await context.bot.get_chat_member(channel_username, user_id)
+            
+            if member.status in ['member', 'administrator', 'creator']:
+                # User is subscribed, proceed to captcha
+                print(f"✅ User {user_id} is subscribed to {channel_username}")
+                await check_captcha_requirement(update, context, giveaway)
+            else:
+                # User not subscribed
+                keyboard = [[InlineKeyboardButton(
+                    "📺 Subscribe to Channel",
+                    url=f"https://t.me/{channel_username.replace('@', '')}"
+                )]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    f"📺 To participate in this giveaway, you must be subscribed to {channel_username}.\n\n"
+                    "Please subscribe to the channel and then click the \"🎯 Participate\" button in the giveaway post again.",
+                    reply_markup=reply_markup
+                )
+        
+        except TelegramError as e:
+            print(f"❌ Telegram API error checking membership: {e}")
+            await update.message.reply_text("❌ Unable to verify subscription. Please try again.")
+    
+    except Exception as e:
+        print(f"❌ Subscription check error: {e}")
+        await update.message.reply_text("❌ Unable to verify subscription. Please try again.")
+
+async def check_captcha_requirement(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway):
+    """Check if user needs to complete captcha"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    giveaway_id = giveaway['id']
+    
+    print(f"🧮 Checking captcha requirement for user {user_id}")
+    
+    try:
+        # Check if user has completed captcha globally
+        if has_user_completed_captcha_globally(user_id):
+            # User has completed captcha before, proceed to participation
+            print(f"✅ User {user_id} has completed captcha globally")
+            await confirm_participation(update, context, giveaway)
+        else:
+            # First-time user, present captcha
+            print(f"🧮 First-time user {user_id}, presenting captcha")
+            await present_first_time_captcha(update, context, giveaway)
+    
+    except Exception as e:
+        print(f"❌ Captcha check error: {e}")
+        await update.message.reply_text("❌ Error checking verification status. Please try again.")
+
+async def present_first_time_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway):
+    """Present captcha challenge to first-time user"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    giveaway_id = giveaway['id']
+    
+    # Generate simple math question
+    num1 = random.randint(1, 10)
+    num2 = random.randint(1, 10)
+    answer = num1 + num2
+    
+    # Store captcha challenge
+    challenge_data = {
+        'giveaway_id': giveaway_id,
+        'answer': answer,
+        'attempts': 0,
+        'max_attempts': 3
+    }
+    
+    if store_captcha_challenge(user_id, challenge_data):
+        # Set user state
+        set_user_state(user_id, 'captcha_pending', {'giveaway_id': giveaway_id})
+        
+        # Send captcha question
+        await update.message.reply_text(
+            f"🧮 First-time participation requires verification. Please solve: {num1} + {num2} = ?\n\n"
+            "Reply with just the number.",
+            reply_markup=ForceReply(selective=True)
+        )
+    else:
+        await update.message.reply_text("❌ Error setting up verification. Please try again.")
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages"""
-    await update.message.reply_text("👋 Hello! Use /start to begin.")
+    """Handle text messages for captcha processing"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Get user state
+    user_state = get_user_state(user_id)
+    
+    if user_state and user_state['state'] == 'captcha_pending':
+        await process_captcha_answer(update, context, update.message.text)
+
+async def process_captcha_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: str):
+    """Process captcha answer from user"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    try:
+        captcha_data = get_captcha_challenge(user_id)
+        
+        if not captcha_data:
+            await update.message.reply_text(
+                "❌ Captcha session expired. Please click the \"🎯 Participate\" button again."
+            )
+            clear_user_state(user_id)
+            return
+        
+        # Parse user answer
+        try:
+            user_answer = int(user_input.strip())
+        except ValueError:
+            await update.message.reply_text(
+                "Please reply with just the number. What is the answer? Reply with just the number."
+            )
+            return
+        
+        # Check if answer is correct
+        if user_answer == captcha_data['answer']:
+            # Correct answer - mark user as globally verified
+            mark_user_captcha_completed_globally(user_id, captcha_data['giveaway_id'])
+            clear_user_state(user_id)
+            clear_captcha_challenge(user_id)
+            
+            await update.message.reply_text(
+                "✅ Verification complete! You can now participate in giveaways. "
+                "Please click the \"🎯 Participate\" button in the giveaway post again."
+            )
+        
+        else:
+            # Incorrect answer
+            new_attempts = captcha_data['attempts'] + 1
+            
+            if new_attempts >= captcha_data['max_attempts']:
+                # Max attempts reached - generate new question
+                num1 = random.randint(1, 10)
+                num2 = random.randint(1, 10)
+                new_answer = num1 + num2
+                
+                update_captcha_challenge(user_id, {
+                    'answer': new_answer,
+                    'attempts': 0
+                })
+                
+                await update.message.reply_text(
+                    f"❌ Maximum attempts reached. New question: {num1} + {num2} = ?\n\n"
+                    "Reply with just the number."
+                )
+            
+            else:
+                # Still have attempts left
+                update_captcha_challenge(user_id, {'attempts': new_attempts})
+                remaining_attempts = captcha_data['max_attempts'] - new_attempts
+                
+                await update.message.reply_text(
+                    f"❌ Incorrect. {remaining_attempts} attempts remaining. "
+                    "What is the answer? Reply with just the number."
+                )
+    
+    except Exception as e:
+        print(f"❌ Captcha processing error: {e}")
+        await update.message.reply_text("❌ Error processing answer. Please try again.")
+
+async def confirm_participation(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway):
+    """Confirm user participation in giveaway"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    giveaway_id = giveaway['id']
+    
+    print(f"🎉 Confirming participation for user {user_id} in giveaway {giveaway_id}")
+    
+    try:
+        # Register user participation
+        participation_data = {
+            'giveaway_id': giveaway_id,
+            'user_id': user_id,
+            'username': update.effective_user.username,
+            'first_name': update.effective_user.first_name,
+            'status': 'active'
+        }
+        
+        if register_user_participation(participation_data):
+            # Get current participant count
+            participant_count = get_participant_count(giveaway_id)
+            
+            # Send success confirmation
+            await update.message.reply_text(
+                f"🎉 Participation confirmed!\n\n"
+                f"📊 Current participants: {participant_count}\n\n"
+                "⏳ Waiting for admin to finish the giveaway. "
+                "You'll receive a direct message with results when it's completed."
+            )
+            
+            print(f"✅ Participation confirmed for user {user_id}")
+        
+        else:
+            await update.message.reply_text("❌ Error confirming participation. Please try again.")
+    
+    except Exception as e:
+        print(f"❌ Participation confirmation error: {e}")
+        await update.message.reply_text("❌ Error confirming participation. Please try again.")
+
+async def handle_result_check(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway_id: int):
+    """Handle result checking from channel announcement"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    print(f"🔍 Result check request: user {user_id}, giveaway {giveaway_id}")
+    
+    try:
+        # Check if user participated
+        if not check_user_participation(giveaway_id, user_id):
+            await update.message.reply_text("❌ You did not participate in this giveaway.")
+            return
+        
+        # Get giveaway results from Channel Service
+        results_result = service_client.call_service('channel', f'/api/giveaways/{giveaway_id}/results')
+        
+        if not results_result['success']:
+            await update.message.reply_text("❌ Results not available yet.")
+            return
+        
+        giveaway_results = results_result['data']
+        winner_ids = giveaway_results.get('winner_ids', [])
+        
+        # Send personalized result message
+        is_winner = user_id in winner_ids
+        
+        if is_winner:
+            message = giveaway_results.get('winner_message', '🎉 Congratulations! You won!')
+        else:
+            message = giveaway_results.get('loser_message', '😔 Better luck next time!')
+        
+        await update.message.reply_text(message)
+    
+    except Exception as e:
+        print(f"❌ Result check error: {e}")
+        await update.message.reply_text("❌ Error checking results. Please try again.")
 
 # Background task functions (optimized for push notification system)
 def update_service_status_cache():
@@ -531,6 +991,24 @@ def update_service_status_cache():
     
     task_start = time.time()
     task_name = "update_service_status_cache"
+    
+    # Log task start
+    if db:
+        try:
+            with app.app_context():
+                task_record = BackgroundTask(
+                    task_name=task_name,
+                    status='running',
+                    details='Updating service status cache (push notification system)'
+                )
+                db.session.add(task_record)
+                db.session.commit()
+                task_id = task_record.id
+        except Exception as e:
+            print(f"Task logging error: {e}")
+            task_id = None
+    else:
+        task_id = None
     
     try:
         # Update service status cache (no bot token checking needed)
@@ -567,15 +1045,62 @@ def update_service_status_cache():
             last_cache_update = datetime.now(timezone.utc)
         
         execution_time = time.time() - task_start
+        
+        # Log task completion
+        if db and task_id:
+            try:
+                with app.app_context():
+                    task_record = BackgroundTask.query.get(task_id)
+                    if task_record:
+                        task_record.status = 'completed'
+                        task_record.execution_time = execution_time
+                        task_record.details = f'Updated status for {len(new_status)} services (push notification system)'
+                        db.session.commit()
+            except Exception as e:
+                print(f"Task completion logging error: {e}")
+        
         print(f"Service status cache updated in {execution_time:.3f}s (push notification system)")
         
     except Exception as e:
+        execution_time = time.time() - task_start
+        
+        # Log task failure
+        if db and task_id:
+            try:
+                with app.app_context():
+                    task_record = BackgroundTask.query.get(task_id)
+                    if task_record:
+                        task_record.status = 'failed'
+                        task_record.execution_time = execution_time
+                        task_record.error_message = str(e)
+                        db.session.commit()
+            except Exception as log_error:
+                print(f"Task failure logging error: {log_error}")
+        
         print(f"Service status cache update failed: {e}")
 
 def cleanup_old_records():
     """Background task to clean up old database records"""
+    task_start = time.time()
+    task_name = "cleanup_old_records"
+    
     if not db:
         return
+    
+    # Log task start
+    try:
+        with app.app_context():
+            task_record = BackgroundTask(
+                task_name=task_name,
+                status='running',
+                details='Cleaning up old database records'
+            )
+            db.session.add(task_record)
+            db.session.commit()
+            task_id = task_record.id
+    except Exception as e:
+        print(f"Cleanup task logging error: {e}")
+        task_id = None
     
     try:
         with app.app_context():
@@ -584,22 +1109,74 @@ def cleanup_old_records():
                 ServiceInteraction.timestamp.desc()
             ).offset(1000).all()
             
+            # Keep only last 500 health checks
+            old_health_checks = HealthCheck.query.order_by(
+                HealthCheck.timestamp.desc()
+            ).offset(500).all()
+            
+            # Keep only last 200 service logs
+            old_logs = ServiceLog.query.order_by(
+                ServiceLog.timestamp.desc()
+            ).offset(200).all()
+            
+            # Keep only last 100 background tasks
+            old_tasks = BackgroundTask.query.order_by(
+                BackgroundTask.timestamp.desc()
+            ).offset(100).all()
+            
             # Keep only last 100 push notifications
             old_notifications = PushNotification.query.order_by(
                 PushNotification.timestamp.desc()
             ).offset(100).all()
             
+            # Clean up expired captcha challenges
+            expired_captchas = CaptchaChallenge.query.filter(
+                CaptchaChallenge.expires_at < datetime.now(timezone.utc)
+            ).all()
+            
+            # Clean up old user states (older than 24 hours)
+            old_states = UserState.query.filter(
+                UserState.updated_at < datetime.now(timezone.utc) - timedelta(hours=24)
+            ).all()
+            
             # Delete old records
             deleted_count = 0
-            for record_list in [old_interactions, old_notifications]:
+            for record_list in [old_interactions, old_health_checks, old_logs, old_tasks, old_notifications, expired_captchas, old_states]:
                 for record in record_list:
                     db.session.delete(record)
                     deleted_count += 1
             
             db.session.commit()
-            print(f"Cleanup completed: deleted {deleted_count} records")
+            
+            execution_time = time.time() - task_start
+            
+            # Log task completion
+            if task_id:
+                task_record = BackgroundTask.query.get(task_id)
+                if task_record:
+                    task_record.status = 'completed'
+                    task_record.execution_time = execution_time
+                    task_record.details = f'Deleted {deleted_count} old records'
+                    db.session.commit()
+            
+            print(f"Cleanup completed: deleted {deleted_count} records in {execution_time:.3f}s")
             
     except Exception as e:
+        execution_time = time.time() - task_start
+        
+        # Log task failure
+        if task_id:
+            try:
+                with app.app_context():
+                    task_record = BackgroundTask.query.get(task_id)
+                    if task_record:
+                        task_record.status = 'failed'
+                        task_record.execution_time = execution_time
+                        task_record.error_message = str(e)
+                        db.session.commit()
+            except Exception as log_error:
+                print(f"Cleanup failure logging error: {log_error}")
+        
         print(f"Cleanup task failed: {e}")
 
 # Background scheduler
@@ -616,6 +1193,17 @@ def test_database_connection():
         return {'status': 'connected', 'message': 'Database connection successful'}
     except Exception as e:
         return {'status': 'error', 'message': f'Database connection failed: {str(e)}'}
+
+def create_tables_safely():
+    """Create database tables with error handling"""
+    if not db:
+        return {'status': 'error', 'message': 'Database not initialized'}
+    
+    try:
+        db.create_all()
+        return {'status': 'success', 'message': 'Database tables created successfully'}
+    except Exception as e:
+        return {'status': 'error', 'message': f'Table creation failed: {str(e)}'}
 
 def log_to_database(level, message, endpoint=None):
     """Log message to database safely (async)"""
@@ -681,17 +1269,16 @@ def home():
     return jsonify({
         'service': 'telegive-bot-service',
         'status': 'working',
-        'version': '1.1.0-phase6-push-notifications-fixed',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates (FIXED)',
-        'message': 'Bot Service with instant push notification system for bot token management (Flask decorator conflict resolved)',
+        'version': '1.1.0-phase6-push-notifications',
+        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
+        'message': 'Bot Service with instant push notification system for bot token management',
         'features': [
             'basic_endpoints', 'json_responses', 'error_handling', 
             'database_connection', 'optimized_service_integrations', 
             'service_status_caching', 'background_tasks', 'auth_service_token',
             'telegram_bot_integration', 'giveaway_participation_flow',
             'global_captcha_system', 'subscription_verification',
-            'push_notification_system', 'instant_bot_token_updates',
-            'flask_decorator_conflict_fixed'
+            'push_notification_system', 'instant_bot_token_updates'
         ],
         'database': {
             'configured': database_configured,
@@ -722,9 +1309,9 @@ def home():
         'port': os.environ.get('PORT', 'not-set')
     })
 
-# Push Notification Endpoint - The Core of the New System (FIXED)
+# Push Notification Endpoint - The Core of the New System
 @app.route('/bot/token/update', methods=['POST'])
-@create_service_token_decorator('bot_token_update')
+@authenticate_service_token
 def update_bot_token():
     """Receive instant bot token updates from Auth Service via push notification"""
     global last_token_update
@@ -942,9 +1529,9 @@ def webhook():
         print(f"❌ Webhook error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Bot status endpoint (enhanced for push notification system) - FIXED
+# Bot status endpoint (enhanced for push notification system)
 @app.route('/bot/status')
-@create_service_token_decorator('bot_status')
+@authenticate_service_token
 def bot_status_endpoint():
     """Get detailed bot status information for push notification system"""
     try:
@@ -990,9 +1577,9 @@ def bot_status_endpoint():
             'timestamp': datetime.now(timezone.utc).isoformat()
         }), 500
 
-# Push notification statistics endpoint - FIXED
+# Push notification statistics endpoint
 @app.route('/push/stats')
-@create_service_token_decorator('push_stats')
+@authenticate_service_token
 def push_notification_stats():
     """Get push notification statistics"""
     try:
@@ -1057,6 +1644,152 @@ def push_notification_stats():
             'timestamp': datetime.now(timezone.utc).isoformat()
         }), 500
 
+# Giveaway management endpoints (same as previous phases)
+@app.route('/giveaway/stats')
+def giveaway_stats():
+    """Get giveaway participation statistics"""
+    try:
+        with app.app_context():
+            total_participations = GiveawayParticipation.query.count()
+            active_participations = GiveawayParticipation.query.filter_by(status='active').count()
+            unique_participants = db.session.query(GiveawayParticipation.user_id).distinct().count()
+            captcha_completions = UserCaptchaStatus.query.count()
+            
+            return jsonify({
+                'giveaway_statistics': {
+                    'total_participations': total_participations,
+                    'active_participations': active_participations,
+                    'unique_participants': unique_participants,
+                    'captcha_completions': captcha_completions
+                },
+                'telegram_bot': get_bot_status(),
+                'push_notification_system': {
+                    'enabled': push_notifications_enabled,
+                    'instant_updates': True,
+                    'polling_disabled': True
+                },
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+    
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to get statistics',
+            'details': str(e),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 500
+
+@app.route('/giveaway/<int:giveaway_id>/participants')
+def get_giveaway_participants(giveaway_id):
+    """Get participants for specific giveaway"""
+    try:
+        with app.app_context():
+            participants = GiveawayParticipation.query.filter_by(
+                giveaway_id=giveaway_id,
+                status='active'
+            ).all()
+            
+            participant_list = []
+            for p in participants:
+                participant_list.append({
+                    'user_id': p.user_id,
+                    'username': p.username,
+                    'first_name': p.first_name,
+                    'participation_date': p.participation_date.isoformat()
+                })
+            
+            return jsonify({
+                'giveaway_id': giveaway_id,
+                'participant_count': len(participant_list),
+                'participants': participant_list,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            })
+    
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to get participants',
+            'giveaway_id': giveaway_id,
+            'details': str(e),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 500
+
+@app.route('/giveaway/<int:giveaway_id>/distribute-results', methods=['POST'])
+def distribute_giveaway_results(giveaway_id):
+    """Distribute giveaway results to all participants"""
+    if not telegram_app:
+        return jsonify({'error': 'Telegram bot not available for result distribution'}), 503
+    
+    try:
+        data = request.get_json()
+        
+        if not data or 'winner_ids' not in data:
+            return jsonify({'error': 'winner_ids required'}), 400
+        
+        winner_ids = data['winner_ids']
+        winner_message = data.get('winner_message', '🎉 Congratulations! You won!')
+        loser_message = data.get('loser_message', '😔 Better luck next time!')
+        
+        # Get all participants
+        with app.app_context():
+            participants = GiveawayParticipation.query.filter_by(
+                giveaway_id=giveaway_id,
+                status='active'
+            ).all()
+        
+        # Distribute results asynchronously
+        def distribute_results():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                async def send_results():
+                    sent_count = 0
+                    failed_count = 0
+                    
+                    for participant in participants:
+                        try:
+                            is_winner = participant.user_id in winner_ids
+                            message = winner_message if is_winner else loser_message
+                            
+                            await telegram_app.bot.send_message(
+                                chat_id=participant.user_id,
+                                text=message
+                            )
+                            
+                            sent_count += 1
+                            print(f"✅ Result sent to user {participant.user_id} ({'winner' if is_winner else 'loser'})")
+                        
+                        except Exception as e:
+                            failed_count += 1
+                            print(f"❌ Failed to send result to user {participant.user_id}: {e}")
+                    
+                    print(f"✅ Result distribution completed: {sent_count} sent, {failed_count} failed")
+                
+                loop.run_until_complete(send_results())
+                loop.close()
+            
+            except Exception as e:
+                print(f"❌ Result distribution error: {e}")
+        
+        thread = threading.Thread(target=distribute_results)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'message': 'Result distribution started',
+            'giveaway_id': giveaway_id,
+            'participant_count': len(participants),
+            'winner_count': len(winner_ids),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to distribute results',
+            'giveaway_id': giveaway_id,
+            'details': str(e),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 500
+
 # Error handlers (same as previous phases)
 @app.errorhandler(404)
 def not_found(error):
@@ -1066,9 +1799,11 @@ def not_found(error):
     return jsonify({
         'error': 'Not Found',
         'message': 'The requested endpoint does not exist',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates (FIXED)',
+        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
         'available_endpoints': [
-            '/', '/webhook', '/bot/token/update', '/bot/status', '/push/stats'
+            '/', '/webhook', '/bot/token/update', '/bot/status', '/push/stats',
+            '/giveaway/stats', '/giveaway/<id>/participants', 
+            '/giveaway/<id>/distribute-results'
         ],
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 404
@@ -1081,7 +1816,7 @@ def internal_error(error):
     return jsonify({
         'error': 'Internal Server Error',
         'message': 'An internal error occurred',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates (FIXED)',
+        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -1099,7 +1834,7 @@ def handle_exception(error):
     return jsonify({
         'error': type(error).__name__,
         'message': str(error),
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates (FIXED)',
+        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -1115,7 +1850,7 @@ def init_application():
                 # Log startup
                 startup_log = ServiceLog(
                     level='INFO',
-                    message='Bot Service Phase 6 started with push notification system (Flask decorator conflict fixed)',
+                    message='Bot Service Phase 6 started with push notification system for instant bot token updates',
                     endpoint='startup'
                 )
                 db.session.add(startup_log)
@@ -1126,7 +1861,7 @@ def init_application():
             print(f"Database initialization error: {e}")
     
     # No bot token checking needed - push notifications will handle this
-    print("🔔 Push notification system ready for instant bot token updates (FIXED)")
+    print("🔔 Push notification system ready for instant bot token updates")
     
     # Start background scheduler (no bot token checking job needed)
     try:
@@ -1149,7 +1884,7 @@ def init_application():
             )
             
             scheduler.start()
-            print("Background scheduler started successfully (push notification system - FIXED)")
+            print("Background scheduler started successfully (push notification system)")
             
             # Initial cache update
             update_service_status_cache()
@@ -1164,7 +1899,7 @@ if __name__ != '__main__':
 # For development testing only
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Bot Service Phase 6 (Push Notifications - FIXED) on port {port}")
+    print(f"Starting Bot Service Phase 6 (Push Notifications) on port {port}")
     
     # Initialize for development
     with app.app_context():
