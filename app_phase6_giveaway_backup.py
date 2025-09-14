@@ -1,6 +1,6 @@
 """
-Bot Service Phase 6 - Dynamic Bot Token Retrieval from Auth Service
-Telegram bot integration with dynamic token retrieval and giveaway participation flow
+Bot Service Phase 6 - Complete Giveaway Participation Flow
+Telegram bot integration with giveaway participation, captcha, and result distribution
 """
 import os
 import json
@@ -47,7 +47,8 @@ except Exception as e:
     print(f"Database configuration error: {e}")
     database_configured = False
 
-# Webhook URL configuration
+# Telegram Bot Configuration
+BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'https://telegive-bot-service-production.up.railway.app')
 
 # Service URLs and authentication configuration
@@ -66,11 +67,8 @@ service_status_cache = {}
 cache_lock = threading.Lock()
 last_cache_update = None
 
-# Dynamic bot token and application
-current_bot_token = None
+# Telegram bot application
 telegram_app = None
-bot_token_last_check = None
-bot_initialization_lock = threading.Lock()
 
 # Initialize database with error handling
 db = None
@@ -83,7 +81,7 @@ except Exception as e:
     database_error = str(e)
     print(f"SQLAlchemy initialization error: {e}")
 
-# Database models (same as Phase 6)
+# Database models (existing ones plus new giveaway models)
 class HealthCheck(db.Model):
     __tablename__ = 'health_checks'
     
@@ -125,7 +123,7 @@ class BackgroundTask(db.Model):
     execution_time = db.Column(db.Float)
     error_message = db.Column(db.Text)
 
-# Giveaway-related models
+# New Giveaway-related models
 class UserCaptchaStatus(db.Model):
     __tablename__ = 'user_captcha_status'
     
@@ -165,12 +163,12 @@ class UserState(db.Model):
     data = db.Column(db.Text)  # JSON data for state context
     updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-# Authenticated Service Client
+# Authenticated Service Client (from Phase 5)
 class AuthenticatedServiceClient:
     def __init__(self):
         self.headers = {
             'Content-Type': 'application/json',
-            'User-Agent': 'Telegive-Bot-Service/1.0.9-phase6-dynamic-token'
+            'User-Agent': 'Telegive-Bot-Service/1.0.8-phase6-giveaway'
         }
         self.fast_timeout = 3
         self.health_timeout = 2
@@ -317,117 +315,7 @@ class AuthenticatedServiceClient:
 # Initialize authenticated service client
 service_client = AuthenticatedServiceClient()
 
-# Dynamic Bot Token Management
-def get_bot_token_from_auth_service():
-    """Retrieve bot token from Auth Service"""
-    try:
-        # Call Auth Service to get the current bot token
-        result = service_client.call_service(
-            'auth', 
-            '/api/bot/token',  # Endpoint to get current bot token
-            timeout=5,
-            log_interaction=False  # Don't log frequent token checks
-        )
-        
-        if result['success'] and result['data']:
-            token = result['data'].get('bot_token')
-            if token:
-                print(f"✅ Bot token retrieved from Auth Service")
-                return token
-            else:
-                print("⚠️ No bot token found in Auth Service response")
-                return None
-        else:
-            print(f"❌ Failed to retrieve bot token: {result.get('error', 'Unknown error')}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Error retrieving bot token from Auth Service: {e}")
-        return None
-
-def initialize_telegram_bot_with_token(bot_token):
-    """Initialize Telegram bot with provided token"""
-    global telegram_app
-    
-    if not bot_token:
-        print("❌ No bot token provided for initialization")
-        return None
-    
-    try:
-        # Create application with the retrieved token
-        telegram_app = Application.builder().token(bot_token).build()
-        
-        # Add handlers
-        telegram_app.add_handler(CommandHandler("start", start_handler))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        
-        print(f"✅ Telegram bot initialized successfully with token: {bot_token[:10]}...")
-        return telegram_app
-    
-    except Exception as e:
-        print(f"❌ Telegram bot initialization error: {e}")
-        return None
-
-def check_and_update_bot_token():
-    """Check for bot token updates and reinitialize if needed"""
-    global current_bot_token, telegram_app, bot_token_last_check
-    
-    with bot_initialization_lock:
-        try:
-            # Get current bot token from Auth Service
-            new_token = get_bot_token_from_auth_service()
-            
-            # Update last check time
-            bot_token_last_check = datetime.now(timezone.utc)
-            
-            # Check if token has changed
-            if new_token != current_bot_token:
-                print(f"🔄 Bot token changed, reinitializing bot...")
-                
-                # Update current token
-                current_bot_token = new_token
-                
-                if new_token:
-                    # Initialize bot with new token
-                    telegram_app = initialize_telegram_bot_with_token(new_token)
-                    if telegram_app:
-                        print("✅ Bot reinitialized with new token")
-                        return True
-                    else:
-                        print("❌ Failed to reinitialize bot with new token")
-                        telegram_app = None
-                        return False
-                else:
-                    # No token available
-                    print("⚠️ No bot token available, bot disabled")
-                    telegram_app = None
-                    return False
-            else:
-                # Token unchanged
-                if new_token:
-                    print("✅ Bot token unchanged, bot operational")
-                    return True
-                else:
-                    print("⚠️ No bot token available")
-                    return False
-                    
-        except Exception as e:
-            print(f"❌ Error checking bot token: {e}")
-            return False
-
-def get_bot_status():
-    """Get current bot status information"""
-    global current_bot_token, telegram_app, bot_token_last_check
-    
-    return {
-        'token_configured': bool(current_bot_token),
-        'bot_initialized': telegram_app is not None,
-        'token_source': 'auth_service',
-        'last_token_check': bot_token_last_check.isoformat() if bot_token_last_check else None,
-        'webhook_url': WEBHOOK_URL
-    }
-
-# Giveaway Helper Functions (same as Phase 6)
+# Giveaway Helper Functions
 def has_user_completed_captcha_globally(user_id):
     """Check if user has completed captcha globally"""
     try:
@@ -617,7 +505,7 @@ def get_participant_count(giveaway_id):
         print(f"Error getting participant count: {e}")
         return 0
 
-# Telegram Bot Handlers (same as Phase 6, but with bot availability check)
+# Telegram Bot Handlers
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command with giveaway and result parameters"""
     user_id = update.effective_user.id
@@ -955,9 +843,33 @@ async def handle_result_check(update: Update, context: ContextTypes.DEFAULT_TYPE
         print(f"❌ Result check error: {e}")
         await update.message.reply_text("❌ Error checking results. Please try again.")
 
-# Background task functions (enhanced with bot token checking)
+# Initialize Telegram Bot
+def initialize_telegram_bot():
+    """Initialize Telegram bot application"""
+    global telegram_app
+    
+    if not BOT_TOKEN:
+        print("❌ TELEGRAM_BOT_TOKEN not configured")
+        return None
+    
+    try:
+        # Create application
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        telegram_app.add_handler(CommandHandler("start", start_handler))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        
+        print("✅ Telegram bot initialized successfully")
+        return telegram_app
+    
+    except Exception as e:
+        print(f"❌ Telegram bot initialization error: {e}")
+        return None
+
+# Background task functions (from Phase 5)
 def update_service_status_cache():
-    """Background task to update service status cache and check bot token"""
+    """Background task to update service status cache"""
     global service_status_cache, last_cache_update
     
     task_start = time.time()
@@ -970,7 +882,7 @@ def update_service_status_cache():
                 task_record = BackgroundTask(
                     task_name=task_name,
                     status='running',
-                    details='Updating service status cache and checking bot token'
+                    details='Updating service status cache with authentication'
                 )
                 db.session.add(task_record)
                 db.session.commit()
@@ -982,10 +894,6 @@ def update_service_status_cache():
         task_id = None
     
     try:
-        # Check and update bot token
-        bot_token_updated = check_and_update_bot_token()
-        
-        # Update service status cache
         new_status = {}
         
         for service_name in SERVICE_URLS.keys():
@@ -1028,12 +936,12 @@ def update_service_status_cache():
                     if task_record:
                         task_record.status = 'completed'
                         task_record.execution_time = execution_time
-                        task_record.details = f'Updated status for {len(new_status)} services, bot token: {"updated" if bot_token_updated else "unchanged"}'
+                        task_record.details = f'Updated status for {len(new_status)} services with auth'
                         db.session.commit()
             except Exception as e:
                 print(f"Task completion logging error: {e}")
         
-        print(f"Service status cache updated in {execution_time:.3f}s (bot token: {'updated' if bot_token_updated else 'unchanged'})")
+        print(f"Service status cache updated in {execution_time:.3f}s (with auth)")
         
     except Exception as e:
         execution_time = time.time() - task_start
@@ -1151,7 +1059,7 @@ def cleanup_old_records():
 # Background scheduler
 scheduler = BackgroundScheduler()
 
-# Database helper functions (same as Phase 6)
+# Database helper functions (from Phase 5)
 def test_database_connection():
     """Test database connection safely"""
     if not db:
@@ -1202,7 +1110,7 @@ def log_to_database(level, message, endpoint=None):
         print(f"Database logging error: {e}")
         return False
 
-# Optimized service status functions (same as Phase 6)
+# Optimized service status functions (from Phase 5)
 def get_cached_service_status():
     """Get service status from cache (fast)"""
     global service_status_cache, last_cache_update
@@ -1227,10 +1135,9 @@ def get_cached_service_status():
 # Flask Routes
 @app.route('/')
 def home():
-    """Main service endpoint with cached service status and dynamic bot status"""
+    """Main service endpoint with cached service status (fast)"""
     db_status = test_database_connection()
     service_status = get_cached_service_status()  # Use cached status for speed
-    bot_status = get_bot_status()  # Get dynamic bot status
     
     # Log this request (async)
     log_to_database('INFO', 'Home endpoint accessed', '/')
@@ -1238,16 +1145,15 @@ def home():
     return jsonify({
         'service': 'telegive-bot-service',
         'status': 'working',
-        'version': '1.0.9-phase6-dynamic-token',
-        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
-        'message': 'Bot Service with dynamic Telegram bot token retrieval from Auth Service',
+        'version': '1.0.8-phase6-giveaway',
+        'phase': 'Phase 6 - Complete Giveaway Participation Flow',
+        'message': 'Bot Service with Telegram bot integration and giveaway participation flow',
         'features': [
             'basic_endpoints', 'json_responses', 'error_handling', 
             'database_connection', 'optimized_service_integrations', 
             'service_status_caching', 'background_tasks', 'auth_service_token',
             'telegram_bot_integration', 'giveaway_participation_flow',
-            'global_captcha_system', 'subscription_verification',
-            'dynamic_bot_token_retrieval'
+            'global_captcha_system', 'subscription_verification'
         ],
         'database': {
             'configured': database_configured,
@@ -1255,7 +1161,11 @@ def home():
             'message': db_status['message']
         },
         'services': service_status,
-        'telegram_bot': bot_status,
+        'telegram_bot': {
+            'configured': bool(BOT_TOKEN),
+            'initialized': telegram_app is not None,
+            'webhook_url': WEBHOOK_URL
+        },
         'authentication': {
             'auth_service_token': 'configured' if AUTH_SERVICE_TOKEN else 'missing',
             'auth_header': AUTH_SERVICE_HEADER
@@ -1272,13 +1182,12 @@ def home():
         'port': os.environ.get('PORT', 'not-set')
     })
 
-# Telegram webhook endpoint (enhanced with bot availability check)
+# Telegram webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle Telegram webhook"""
     if not telegram_app:
-        print("⚠️ Webhook received but bot not initialized")
-        return jsonify({'error': 'Telegram bot not initialized', 'status': 'bot_unavailable'}), 200
+        return jsonify({'error': 'Telegram bot not initialized'}), 500
     
     try:
         # Get update from request
@@ -1286,8 +1195,6 @@ def webhook():
         
         if not update_data:
             return jsonify({'error': 'No update data'}), 400
-        
-        print(f"📨 Webhook received: {update_data.get('update_id', 'unknown')}")
         
         # Process update asynchronously
         def process_update():
@@ -1299,7 +1206,6 @@ def webhook():
                 loop.run_until_complete(telegram_app.process_update(update))
                 
                 loop.close()
-                print(f"✅ Webhook processed successfully")
             except Exception as e:
                 print(f"❌ Webhook processing error: {e}")
         
@@ -1313,51 +1219,7 @@ def webhook():
         print(f"❌ Webhook error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Bot token management endpoints
-@app.route('/bot/token/refresh', methods=['POST'])
-def refresh_bot_token():
-    """Manually refresh bot token from Auth Service"""
-    try:
-        success = check_and_update_bot_token()
-        bot_status = get_bot_status()
-        
-        return jsonify({
-            'message': 'Bot token refresh completed',
-            'success': success,
-            'bot_status': bot_status,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-    
-    except Exception as e:
-        return jsonify({
-            'error': 'Failed to refresh bot token',
-            'details': str(e),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 500
-
-@app.route('/bot/status')
-def bot_status_endpoint():
-    """Get detailed bot status information"""
-    try:
-        bot_status = get_bot_status()
-        
-        # Add additional status information
-        bot_status['auth_service_url'] = SERVICE_URLS['auth']
-        bot_status['auth_service_token_configured'] = bool(AUTH_SERVICE_TOKEN)
-        
-        return jsonify({
-            'bot_status': bot_status,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-    
-    except Exception as e:
-        return jsonify({
-            'error': 'Failed to get bot status',
-            'details': str(e),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 500
-
-# Giveaway management endpoints (same as Phase 6)
+# Giveaway management endpoints
 @app.route('/giveaway/stats')
 def giveaway_stats():
     """Get giveaway participation statistics"""
@@ -1375,7 +1237,10 @@ def giveaway_stats():
                     'unique_participants': unique_participants,
                     'captcha_completions': captcha_completions
                 },
-                'telegram_bot': get_bot_status(),
+                'telegram_bot': {
+                    'configured': bool(BOT_TOKEN),
+                    'initialized': telegram_app is not None
+                },
                 'timestamp': datetime.now(timezone.utc).isoformat()
             })
     
@@ -1423,9 +1288,6 @@ def get_giveaway_participants(giveaway_id):
 @app.route('/giveaway/<int:giveaway_id>/distribute-results', methods=['POST'])
 def distribute_giveaway_results(giveaway_id):
     """Distribute giveaway results to all participants"""
-    if not telegram_app:
-        return jsonify({'error': 'Telegram bot not available for result distribution'}), 503
-    
     try:
         data = request.get_json()
         
@@ -1442,6 +1304,9 @@ def distribute_giveaway_results(giveaway_id):
                 giveaway_id=giveaway_id,
                 status='active'
             ).all()
+        
+        if not telegram_app:
+            return jsonify({'error': 'Telegram bot not initialized'}), 500
         
         # Distribute results asynchronously
         def distribute_results():
@@ -1498,7 +1363,7 @@ def distribute_giveaway_results(giveaway_id):
             'timestamp': datetime.now(timezone.utc).isoformat()
         }), 500
 
-# Error handlers (same as Phase 6)
+# Error handlers (from Phase 5)
 @app.errorhandler(404)
 def not_found(error):
     """Handle 404 errors with JSON response and async logging"""
@@ -1507,11 +1372,11 @@ def not_found(error):
     return jsonify({
         'error': 'Not Found',
         'message': 'The requested endpoint does not exist',
-        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
+        'phase': 'Phase 6 - Complete Giveaway Participation Flow',
         'available_endpoints': [
-            '/', '/webhook', '/bot/token/refresh', '/bot/status',
-            '/giveaway/stats', '/giveaway/<id>/participants', 
-            '/giveaway/<id>/distribute-results'
+            '/', '/health', '/webhook', '/giveaway/stats',
+            '/giveaway/<id>/participants', '/giveaway/<id>/distribute-results',
+            '/auth/bot/<bot_id>/token', '/auth/bot/<bot_id>/info', '/auth/test'
         ],
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 404
@@ -1524,7 +1389,7 @@ def internal_error(error):
     return jsonify({
         'error': 'Internal Server Error',
         'message': 'An internal error occurred',
-        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
+        'phase': 'Phase 6 - Complete Giveaway Participation Flow',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -1542,13 +1407,13 @@ def handle_exception(error):
     return jsonify({
         'error': type(error).__name__,
         'message': str(error),
-        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
+        'phase': 'Phase 6 - Complete Giveaway Participation Flow',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
 # Initialize database and background tasks on startup
 def init_application():
-    """Initialize database, background tasks, and check for bot token on startup"""
+    """Initialize database, background tasks, and Telegram bot on startup"""
     if db:
         try:
             with app.app_context():
@@ -1558,7 +1423,7 @@ def init_application():
                 # Log startup
                 startup_log = ServiceLog(
                     level='INFO',
-                    message='Bot Service Phase 6 started with dynamic bot token retrieval from Auth Service',
+                    message='Bot Service Phase 6 started with Telegram bot and giveaway participation flow',
                     endpoint='startup'
                 )
                 db.session.add(startup_log)
@@ -1568,19 +1433,18 @@ def init_application():
         except Exception as e:
             print(f"Database initialization error: {e}")
     
-    # Check for bot token from Auth Service
-    print("🔍 Checking for bot token from Auth Service...")
-    check_and_update_bot_token()
+    # Initialize Telegram bot
+    initialize_telegram_bot()
     
     # Start background scheduler
     try:
         if not scheduler.running:
-            # Add background jobs (enhanced with bot token checking)
+            # Add background jobs
             scheduler.add_job(
                 func=update_service_status_cache,
                 trigger=IntervalTrigger(minutes=2),  # Update every 2 minutes
                 id='update_service_status',
-                name='Update Service Status Cache and Check Bot Token',
+                name='Update Service Status Cache',
                 replace_existing=True
             )
             
@@ -1608,7 +1472,7 @@ if __name__ != '__main__':
 # For development testing only
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Bot Service Phase 6 (Dynamic Token) on port {port}")
+    print(f"Starting Bot Service Phase 6 (Giveaway Flow) on port {port}")
     
     # Initialize for development
     with app.app_context():
@@ -1618,7 +1482,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Development database error: {e}")
     
-    # Start scheduler and check for bot token
+    # Start scheduler and bot for development
     init_application()
     
     app.run(host='0.0.0.0', port=port, debug=False)
