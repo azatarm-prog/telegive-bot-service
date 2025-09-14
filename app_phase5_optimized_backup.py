@@ -1,6 +1,6 @@
 """
-Bot Service Phase 5 - Optimized Service Integrations + Auth Token
-Complete optimization with Auth Service secret token authentication
+Bot Service Phase 5 - Optimized Service Integrations + Background Tasks
+Complete optimization with caching, background tasks, and performance improvements
 """
 import os
 import json
@@ -41,16 +41,12 @@ except Exception as e:
     print(f"Database configuration error: {e}")
     database_configured = False
 
-# Service URLs and authentication configuration
+# Service URLs configuration
 SERVICE_URLS = {
     'auth': os.environ.get('AUTH_SERVICE_URL', 'https://web-production-ddd7e.up.railway.app'),
     'channel': os.environ.get('CHANNEL_SERVICE_URL', 'https://telegive-channel-service.railway.app'),
     'participant': os.environ.get('PARTICIPANT_SERVICE_URL', 'https://telegive-participant-production.up.railway.app')
 }
-
-# Auth Service authentication
-AUTH_SERVICE_TOKEN = os.environ.get('AUTH_SERVICE_TOKEN', 'ch4nn3l_s3rv1c3_t0k3n_2025_s3cur3_r4nd0m_str1ng')
-AUTH_SERVICE_HEADER = 'X-Service-Token'
 
 # Service status cache
 service_status_cache = {}
@@ -110,28 +106,18 @@ class BackgroundTask(db.Model):
     execution_time = db.Column(db.Float)
     error_message = db.Column(db.Text)
 
-# Optimized Service Client with Auth Service token support
-class AuthenticatedServiceClient:
+# Optimized Service Client with caching
+class OptimizedServiceClient:
     def __init__(self):
         self.headers = {
             'Content-Type': 'application/json',
-            'User-Agent': 'Telegive-Bot-Service/1.0.7-phase5-auth-token'
+            'User-Agent': 'Telegive-Bot-Service/1.0.6-phase5-optimized'
         }
         self.fast_timeout = 3  # Reduced from 10 seconds
         self.health_timeout = 2  # Even faster for health checks
     
-    def _get_headers_for_service(self, service_name):
-        """Get headers with authentication for specific service"""
-        headers = self.headers.copy()
-        
-        # Add Auth Service token if calling Auth Service
-        if service_name == 'auth' and AUTH_SERVICE_TOKEN:
-            headers[AUTH_SERVICE_HEADER] = AUTH_SERVICE_TOKEN
-            
-        return headers
-    
     def call_service(self, service_name, endpoint, method='GET', data=None, timeout=None, log_interaction=True):
-        """Make API call to external service with authentication"""
+        """Make API call to external service with optimized timeouts"""
         if timeout is None:
             timeout = self.fast_timeout
             
@@ -148,17 +134,16 @@ class AuthenticatedServiceClient:
                 }
             
             url = urljoin(base_url, endpoint)
-            headers = self._get_headers_for_service(service_name)
             
-            # Make the request with service-specific authentication
+            # Make the request with optimized timeout
             if method.upper() == 'POST':
-                response = requests.post(url, headers=headers, json=data, timeout=timeout)
+                response = requests.post(url, headers=self.headers, json=data, timeout=timeout)
             elif method.upper() == 'PUT':
-                response = requests.put(url, headers=headers, json=data, timeout=timeout)
+                response = requests.put(url, headers=self.headers, json=data, timeout=timeout)
             elif method.upper() == 'DELETE':
-                response = requests.delete(url, headers=headers, timeout=timeout)
+                response = requests.delete(url, headers=self.headers, timeout=timeout)
             else:
-                response = requests.get(url, headers=headers, timeout=timeout)
+                response = requests.get(url, headers=self.headers, timeout=timeout)
             
             response_time = time.time() - start_time
             
@@ -185,8 +170,7 @@ class AuthenticatedServiceClient:
                     'status_code': response.status_code,
                     'response_time': response_time,
                     'service_name': service_name,
-                    'endpoint': endpoint,
-                    'authenticated': service_name == 'auth'  # Indicate if auth was used
+                    'endpoint': endpoint
                 }
             else:
                 return {
@@ -196,8 +180,7 @@ class AuthenticatedServiceClient:
                     'response_time': response_time,
                     'service_name': service_name,
                     'endpoint': endpoint,
-                    'response_text': response.text[:200],  # Reduced response text
-                    'authenticated': service_name == 'auth'
+                    'response_text': response.text[:200]  # Reduced response text
                 }
                 
         except requests.exceptions.Timeout:
@@ -257,46 +240,6 @@ class AuthenticatedServiceClient:
                 'endpoint': endpoint
             }
     
-    def get_bot_token(self, bot_id):
-        """Get bot token from Auth Service using authenticated API call"""
-        endpoint = f'/api/bots/{bot_id}/token'
-        result = self.call_service('auth', endpoint, method='GET')
-        
-        if result['success']:
-            return {
-                'success': True,
-                'bot_token': result['data'].get('bot_token'),
-                'bot_id': bot_id,
-                'response_time': result['response_time']
-            }
-        else:
-            return {
-                'success': False,
-                'error': result['error'],
-                'bot_id': bot_id,
-                'response_time': result.get('response_time', 0)
-            }
-    
-    def get_bot_info(self, bot_id):
-        """Get bot information from Auth Service"""
-        endpoint = f'/api/bots/{bot_id}'
-        result = self.call_service('auth', endpoint, method='GET')
-        
-        if result['success']:
-            return {
-                'success': True,
-                'bot_info': result['data'],
-                'bot_id': bot_id,
-                'response_time': result['response_time']
-            }
-        else:
-            return {
-                'success': False,
-                'error': result['error'],
-                'bot_id': bot_id,
-                'response_time': result.get('response_time', 0)
-            }
-    
     def _log_interaction(self, service_name, endpoint, method, status_code=None, response_time=None, success=False, error_message=None):
         """Log service interaction to database (async to avoid blocking)"""
         if not db:
@@ -318,8 +261,8 @@ class AuthenticatedServiceClient:
         except Exception as e:
             print(f"Service interaction logging error: {e}")
 
-# Initialize authenticated service client
-service_client = AuthenticatedServiceClient()
+# Initialize optimized service client
+service_client = OptimizedServiceClient()
 
 # Background task functions
 def update_service_status_cache():
@@ -336,7 +279,7 @@ def update_service_status_cache():
                 task_record = BackgroundTask(
                     task_name=task_name,
                     status='running',
-                    details='Updating service status cache with authentication'
+                    details='Updating service status cache'
                 )
                 db.session.add(task_record)
                 db.session.commit()
@@ -363,16 +306,14 @@ def update_service_status_cache():
                     'status': 'connected' if result['success'] else 'disconnected',
                     'response_time': result.get('response_time', 0),
                     'error': result.get('error') if not result['success'] else None,
-                    'last_checked': datetime.now(timezone.utc).isoformat(),
-                    'authenticated': result.get('authenticated', False)
+                    'last_checked': datetime.now(timezone.utc).isoformat()
                 }
             except Exception as e:
                 new_status[service_name] = {
                     'status': 'error',
                     'error': str(e),
                     'response_time': 0,
-                    'last_checked': datetime.now(timezone.utc).isoformat(),
-                    'authenticated': False
+                    'last_checked': datetime.now(timezone.utc).isoformat()
                 }
         
         # Update cache with thread safety
@@ -390,12 +331,12 @@ def update_service_status_cache():
                     if task_record:
                         task_record.status = 'completed'
                         task_record.execution_time = execution_time
-                        task_record.details = f'Updated status for {len(new_status)} services with auth'
+                        task_record.details = f'Updated status for {len(new_status)} services'
                         db.session.commit()
             except Exception as e:
                 print(f"Task completion logging error: {e}")
         
-        print(f"Service status cache updated in {execution_time:.3f}s (with auth)")
+        print(f"Service status cache updated in {execution_time:.3f}s")
         
     except Exception as e:
         execution_time = time.time() - task_start
@@ -587,16 +528,14 @@ def check_single_service(service_name, timeout=None):
             'status': 'connected' if result['success'] else 'disconnected',
             'response_time': result.get('response_time', 0),
             'error': result.get('error') if not result['success'] else None,
-            'last_checked': datetime.now(timezone.utc).isoformat(),
-            'authenticated': result.get('authenticated', False)
+            'last_checked': datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
         return {
             'status': 'error',
             'error': str(e),
             'response_time': 0,
-            'last_checked': datetime.now(timezone.utc).isoformat(),
-            'authenticated': False
+            'last_checked': datetime.now(timezone.utc).isoformat()
         }
 
 # Routes
@@ -612,13 +551,13 @@ def home():
     return jsonify({
         'service': 'telegive-bot-service',
         'status': 'working',
-        'version': '1.0.7-phase5-auth-token',
-        'phase': 'Phase 5 - Optimized Service Integrations + Auth Token',
-        'message': 'Bot Service with authenticated service integrations and background tasks',
+        'version': '1.0.6-phase5-optimized',
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
+        'message': 'Bot Service with optimized service integrations and background tasks',
         'features': [
             'basic_endpoints', 'json_responses', 'error_handling', 
             'database_connection', 'optimized_service_integrations', 
-            'service_status_caching', 'background_tasks', 'auth_service_token'
+            'service_status_caching', 'background_tasks'
         ],
         'database': {
             'configured': database_configured,
@@ -626,10 +565,6 @@ def home():
             'message': db_status['message']
         },
         'services': service_status,
-        'authentication': {
-            'auth_service_token': 'configured' if AUTH_SERVICE_TOKEN else 'missing',
-            'auth_header': AUTH_SERVICE_HEADER
-        },
         'cache_info': {
             'last_updated': last_cache_update.isoformat() if last_cache_update else None,
             'cache_age_seconds': (datetime.now(timezone.utc) - last_cache_update).total_seconds() if last_cache_update else None
@@ -642,87 +577,315 @@ def home():
         'port': os.environ.get('PORT', 'not-set')
     })
 
-# Auth Service integration endpoints
-@app.route('/auth/bot/<int:bot_id>/token')
-def get_bot_token_endpoint(bot_id):
-    """Get bot token from Auth Service (authenticated)"""
-    result = service_client.get_bot_token(bot_id)
+@app.route('/health')
+def health():
+    """Health check endpoint with cached service status (fast)"""
+    db_status = test_database_connection()
+    service_status = get_cached_service_status()  # Use cached status for speed
     
-    if result['success']:
-        return jsonify({
-            'bot_id': bot_id,
-            'bot_token': result['bot_token'],
-            'source': 'auth_service',
-            'response_time': result['response_time'],
-            'authenticated': True,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-    else:
-        return jsonify({
-            'error': 'Failed to retrieve bot token',
-            'bot_id': bot_id,
-            'details': result['error'],
-            'response_time': result['response_time'],
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 404
-
-@app.route('/auth/bot/<int:bot_id>/info')
-def get_bot_info_endpoint(bot_id):
-    """Get bot information from Auth Service (authenticated)"""
-    result = service_client.get_bot_info(bot_id)
+    # Count records if database is working
+    record_counts = {}
+    if db_status['status'] == 'connected':
+        try:
+            record_counts = {
+                'health_checks': HealthCheck.query.count(),
+                'service_logs': ServiceLog.query.count(),
+                'service_interactions': ServiceInteraction.query.count(),
+                'background_tasks': BackgroundTask.query.count()
+            }
+        except Exception as e:
+            record_counts = {'error': str(e)}
     
-    if result['success']:
-        return jsonify({
-            'bot_id': bot_id,
-            'bot_info': result['bot_info'],
-            'source': 'auth_service',
-            'response_time': result['response_time'],
-            'authenticated': True,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        })
-    else:
-        return jsonify({
-            'error': 'Failed to retrieve bot info',
-            'bot_id': bot_id,
-            'details': result['error'],
-            'response_time': result['response_time'],
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 404
-
-@app.route('/auth/test')
-def test_auth_service():
-    """Test Auth Service authentication"""
-    # Test health endpoint
-    health_result = service_client.call_service('auth', '/health')
+    # Log health check (async)
+    log_to_database('INFO', 'Health check performed', '/health')
     
-    # Test a protected endpoint (if available)
-    protected_result = service_client.call_service('auth', '/api/bots')
+    # Create health check record (async)
+    if db_status['status'] == 'connected':
+        def create_health_record():
+            try:
+                with app.app_context():
+                    health_record = HealthCheck(
+                        status='healthy',
+                        details=json.dumps({
+                            'database_status': db_status['status'],
+                            'service_status': service_status,
+                            'record_counts': record_counts,
+                            'background_tasks': scheduler.running
+                        })
+                    )
+                    db.session.add(health_record)
+                    db.session.commit()
+            except Exception as e:
+                print(f"Health record creation error: {e}")
+        
+        thread = threading.Thread(target=create_health_record)
+        thread.daemon = True
+        thread.start()
+    
+    # Determine overall status
+    services_healthy = all(s.get('status') == 'connected' for s in service_status.values())
+    overall_status = 'healthy' if db_status['status'] == 'connected' and services_healthy else 'degraded'
     
     return jsonify({
-        'auth_service_test': {
-            'health_check': {
-                'success': health_result['success'],
-                'response_time': health_result.get('response_time', 0),
-                'authenticated': health_result.get('authenticated', False),
-                'error': health_result.get('error') if not health_result['success'] else None
-            },
-            'protected_endpoint': {
-                'success': protected_result['success'],
-                'response_time': protected_result.get('response_time', 0),
-                'authenticated': protected_result.get('authenticated', False),
-                'error': protected_result.get('error') if not protected_result['success'] else None
-            }
+        'status': overall_status,
+        'service': 'telegive-bot-service',
+        'version': '1.0.6-phase5-optimized',
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
+        'database': {
+            'configured': database_configured,
+            'connection': db_status['status'],
+            'message': db_status['message'],
+            'records': record_counts
         },
-        'authentication_config': {
-            'token_configured': bool(AUTH_SERVICE_TOKEN),
-            'header_name': AUTH_SERVICE_HEADER,
-            'auth_service_url': SERVICE_URLS['auth']
+        'services': service_status,
+        'background_tasks': {
+            'scheduler_running': scheduler.running,
+            'active_jobs': len(scheduler.get_jobs()),
+            'job_names': [job.id for job in scheduler.get_jobs()]
+        },
+        'cache_info': {
+            'last_updated': last_cache_update.isoformat() if last_cache_update else None,
+            'services_cached': len(service_status)
+        },
+        'environment': {
+            'PORT': os.environ.get('PORT', 'not-set'),
+            'RAILWAY_ENVIRONMENT': os.environ.get('RAILWAY_ENVIRONMENT', 'not-set'),
+            'DATABASE_URL': 'set' if os.environ.get('DATABASE_URL') else 'not-set'
+        },
+        'checks': {
+            'flask_app': 'working',
+            'json_responses': 'working',
+            'error_handling': 'implemented',
+            'database_connection': db_status['status'],
+            'service_integrations': 'optimized',
+            'background_tasks': 'running' if scheduler.running else 'stopped',
+            'service_caching': 'active'
         },
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
-# Continue with all previous endpoints...
-# [All previous endpoints from Phase 5 would be included here]
+# Background task management endpoints
+@app.route('/tasks/status')
+def tasks_status():
+    """Get background task status and recent executions"""
+    db_status = test_database_connection()
+    
+    task_info = {
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
+        'scheduler': {
+            'running': scheduler.running,
+            'active_jobs': len(scheduler.get_jobs()),
+            'jobs': []
+        },
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Get job information
+    for job in scheduler.get_jobs():
+        task_info['scheduler']['jobs'].append({
+            'id': job.id,
+            'name': job.name,
+            'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
+            'trigger': str(job.trigger)
+        })
+    
+    # Get recent task executions from database
+    if db_status['status'] == 'connected':
+        try:
+            recent_tasks = BackgroundTask.query.order_by(
+                BackgroundTask.timestamp.desc()
+            ).limit(20).all()
+            
+            task_executions = []
+            for task in recent_tasks:
+                task_executions.append({
+                    'id': task.id,
+                    'timestamp': task.timestamp.isoformat(),
+                    'task_name': task.task_name,
+                    'status': task.status,
+                    'execution_time': task.execution_time,
+                    'details': task.details,
+                    'error_message': task.error_message
+                })
+            
+            task_info['recent_executions'] = task_executions
+            
+        except Exception as e:
+            task_info['recent_executions_error'] = str(e)
+    
+    return jsonify(task_info)
+
+@app.route('/tasks/trigger/<task_name>', methods=['POST'])
+def trigger_task(task_name):
+    """Manually trigger a background task"""
+    if task_name == 'update_service_status':
+        # Run in background thread
+        thread = threading.Thread(target=update_service_status_cache)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'message': f'Task {task_name} triggered successfully',
+            'task_name': task_name,
+            'status': 'started',
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+    
+    elif task_name == 'cleanup_old_records':
+        # Run in background thread
+        thread = threading.Thread(target=cleanup_old_records)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'message': f'Task {task_name} triggered successfully',
+            'task_name': task_name,
+            'status': 'started',
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+    
+    else:
+        return jsonify({
+            'error': f'Unknown task: {task_name}',
+            'available_tasks': ['update_service_status', 'cleanup_old_records'],
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 400
+
+# Optimized service integration endpoints
+@app.route('/services/test', methods=['POST'])
+def test_service_integration():
+    """Test service integration with specific service and endpoint (optimized)"""
+    data = request.get_json()
+    
+    if not data or 'service' not in data or 'endpoint' not in data:
+        return jsonify({
+            'error': 'service and endpoint are required',
+            'example': {
+                'service': 'auth',
+                'endpoint': '/health',
+                'method': 'GET',
+                'data': {},
+                'timeout': 3
+            },
+            'available_services': list(SERVICE_URLS.keys()),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 400
+    
+    service_name = data['service']
+    endpoint = data['endpoint']
+    method = data.get('method', 'GET')
+    request_data = data.get('data')
+    timeout = data.get('timeout', service_client.fast_timeout)
+    
+    if service_name not in SERVICE_URLS:
+        return jsonify({
+            'error': f'Service {service_name} not available',
+            'available_services': list(SERVICE_URLS.keys()),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 400
+    
+    result = service_client.call_service(service_name, endpoint, method, request_data, timeout)
+    
+    return jsonify({
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
+        'test_result': result,
+        'optimizations': {
+            'timeout_used': timeout,
+            'fast_timeout': service_client.fast_timeout,
+            'health_timeout': service_client.health_timeout
+        },
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+
+@app.route('/services/status')
+def services_status():
+    """Get detailed status of all external services (fast with cache)"""
+    service_status = get_cached_service_status()
+    
+    # Get recent interaction statistics (limited for performance)
+    interaction_stats = {}
+    if db and test_database_connection()['status'] == 'connected':
+        try:
+            for service_name in SERVICE_URLS.keys():
+                # Only get last 5 interactions for performance
+                recent_interactions = ServiceInteraction.query.filter_by(
+                    service_name=service_name
+                ).order_by(ServiceInteraction.timestamp.desc()).limit(5).all()
+                
+                if recent_interactions:
+                    success_count = sum(1 for i in recent_interactions if i.success)
+                    avg_response_time = sum(i.response_time or 0 for i in recent_interactions) / len(recent_interactions)
+                    
+                    interaction_stats[service_name] = {
+                        'recent_interactions': len(recent_interactions),
+                        'success_rate': f"{(success_count / len(recent_interactions) * 100):.1f}%",
+                        'avg_response_time': f"{avg_response_time:.3f}s"
+                    }
+                else:
+                    interaction_stats[service_name] = {
+                        'recent_interactions': 0,
+                        'success_rate': 'N/A',
+                        'avg_response_time': 'N/A'
+                    }
+        except Exception as e:
+            interaction_stats = {'error': str(e)}
+    
+    return jsonify({
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
+        'service_urls': SERVICE_URLS,
+        'service_status': service_status,
+        'interaction_statistics': interaction_stats,
+        'cache_info': {
+            'last_updated': last_cache_update.isoformat() if last_cache_update else None,
+            'cache_age_seconds': (datetime.now(timezone.utc) - last_cache_update).total_seconds() if last_cache_update else None,
+            'services_cached': len(service_status)
+        },
+        'optimizations': {
+            'status_caching': 'active',
+            'background_updates': scheduler.running,
+            'fast_timeouts': {
+                'service_calls': service_client.fast_timeout,
+                'health_checks': service_client.health_timeout
+            }
+        },
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+
+@app.route('/services/refresh', methods=['POST'])
+def refresh_service_status():
+    """Force refresh of service status cache"""
+    # Trigger immediate cache update
+    thread = threading.Thread(target=update_service_status_cache)
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        'message': 'Service status cache refresh triggered',
+        'previous_update': last_cache_update.isoformat() if last_cache_update else None,
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+
+@app.route('/services/check/<service_name>')
+def check_service_live(service_name):
+    """Check single service status live (not cached)"""
+    if service_name not in SERVICE_URLS:
+        return jsonify({
+            'error': f'Service {service_name} not available',
+            'available_services': list(SERVICE_URLS.keys()),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 400
+    
+    result = check_single_service(service_name)
+    
+    return jsonify({
+        'service_name': service_name,
+        'live_status': result,
+        'cached_status': service_status_cache.get(service_name, {}),
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    })
+
+# Continue with remaining endpoints in next part due to length...
+# [Previous phase endpoints would continue here]
 
 # Error handlers with optimized logging
 @app.errorhandler(404)
@@ -733,13 +896,12 @@ def not_found(error):
     return jsonify({
         'error': 'Not Found',
         'message': 'The requested endpoint does not exist',
-        'phase': 'Phase 5 - Optimized Service Integrations + Auth Token',
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
         'available_endpoints': [
             '/', '/health', '/test', '/status', '/api/info',
             '/database/test', '/database/status', '/logs',
             '/services/test', '/services/status', '/services/refresh',
-            '/services/check/<service>', '/tasks/status', '/tasks/trigger/<task>',
-            '/auth/bot/<bot_id>/token', '/auth/bot/<bot_id>/info', '/auth/test'
+            '/services/check/<service>', '/tasks/status', '/tasks/trigger/<task>'
         ],
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 404
@@ -752,7 +914,7 @@ def internal_error(error):
     return jsonify({
         'error': 'Internal Server Error',
         'message': 'An internal error occurred',
-        'phase': 'Phase 5 - Optimized Service Integrations + Auth Token',
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -770,7 +932,7 @@ def handle_exception(error):
     return jsonify({
         'error': type(error).__name__,
         'message': str(error),
-        'phase': 'Phase 5 - Optimized Service Integrations + Auth Token',
+        'phase': 'Phase 5 - Optimized Service Integrations + Background Tasks',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -786,7 +948,7 @@ def init_application():
                 # Log startup
                 startup_log = ServiceLog(
                     level='INFO',
-                    message='Bot Service Phase 5 started with Auth Service token authentication',
+                    message='Bot Service Phase 5 started with optimizations and background tasks',
                     endpoint='startup'
                 )
                 db.session.add(startup_log)
@@ -832,7 +994,7 @@ if __name__ != '__main__':
 # For development testing only
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Bot Service Phase 5 (Auth Token) on port {port}")
+    print(f"Starting Bot Service Phase 5 (Optimized) on port {port}")
     
     # Initialize for development
     with app.app_context():
