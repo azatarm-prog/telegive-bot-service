@@ -1,6 +1,6 @@
 """
-Bot Service Phase 6 - Push Notification System for Instant Bot Token Updates
-Replaces 2-minute polling with instant push notifications from Auth Service
+Bot Service Phase 6 - Dynamic Bot Token Retrieval from Auth Service
+Telegram bot integration with dynamic token retrieval and giveaway participation flow
 """
 import os
 import json
@@ -57,9 +57,8 @@ SERVICE_URLS = {
     'participant': os.environ.get('PARTICIPANT_SERVICE_URL', 'https://telegive-participant-production.up.railway.app')
 }
 
-# Service authentication
-SERVICE_TO_SERVICE_SECRET = os.environ.get('SERVICE_TO_SERVICE_SECRET', 'ch4nn3l_s3rv1c3_t0k3n_2025_s3cur3_r4nd0m_str1ng')
-AUTH_SERVICE_TOKEN = os.environ.get('AUTH_SERVICE_TOKEN', SERVICE_TO_SERVICE_SECRET)
+# Auth Service authentication
+AUTH_SERVICE_TOKEN = os.environ.get('AUTH_SERVICE_TOKEN', 'ch4nn3l_s3rv1c3_t0k3n_2025_s3cur3_r4nd0m_str1ng')
 AUTH_SERVICE_HEADER = 'X-Service-Token'
 
 # Service status cache
@@ -67,14 +66,11 @@ service_status_cache = {}
 cache_lock = threading.Lock()
 last_cache_update = None
 
-# Push notification system for bot token management
+# Dynamic bot token and application
 current_bot_token = None
-current_bot_username = None
-current_bot_id = None
 telegram_app = None
+bot_token_last_check = None
 bot_initialization_lock = threading.Lock()
-last_token_update = None
-push_notifications_enabled = True
 
 # Initialize database with error handling
 db = None
@@ -87,7 +83,7 @@ except Exception as e:
     database_error = str(e)
     print(f"SQLAlchemy initialization error: {e}")
 
-# Database models (same as previous phases)
+# Database models (same as Phase 6)
 class HealthCheck(db.Model):
     __tablename__ = 'health_checks'
     
@@ -129,22 +125,7 @@ class BackgroundTask(db.Model):
     execution_time = db.Column(db.Float)
     error_message = db.Column(db.Text)
 
-# Push notification tracking
-class PushNotification(db.Model):
-    __tablename__ = 'push_notifications'
-    
-    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    timestamp = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    source_service = db.Column(db.String(100), nullable=False)
-    notification_type = db.Column(db.String(50), nullable=False)  # bot_token_update, bot_token_removed
-    bot_id = db.Column(db.BigInteger)
-    bot_username = db.Column(db.String(100))
-    status = db.Column(db.String(20), nullable=False)  # received, processed, failed
-    processing_time = db.Column(db.Float)
-    error_message = db.Column(db.Text)
-    request_data = db.Column(db.Text)  # JSON data
-
-# Giveaway-related models (same as previous phases)
+# Giveaway-related models
 class UserCaptchaStatus(db.Model):
     __tablename__ = 'user_captcha_status'
     
@@ -184,12 +165,12 @@ class UserState(db.Model):
     data = db.Column(db.Text)  # JSON data for state context
     updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-# Authenticated Service Client (same as previous phases)
+# Authenticated Service Client
 class AuthenticatedServiceClient:
     def __init__(self):
         self.headers = {
             'Content-Type': 'application/json',
-            'User-Agent': 'Telegive-Bot-Service/1.1.0-phase6-push-notifications'
+            'User-Agent': 'Telegive-Bot-Service/1.0.9-phase6-dynamic-token'
         }
         self.fast_timeout = 3
         self.health_timeout = 2
@@ -336,127 +317,117 @@ class AuthenticatedServiceClient:
 # Initialize authenticated service client
 service_client = AuthenticatedServiceClient()
 
-# Push Notification Bot Token Management
-def authenticate_service_token(f):
-    """Decorator for service token authentication"""
-    def decorated_function(*args, **kwargs):
-        token = request.headers.get('X-Service-Token')
-        
-        if not token or token != SERVICE_TO_SERVICE_SECRET:
-            return jsonify({
-                'success': False,
-                'error': 'Authentication failed',
-                'message': 'Invalid or missing service token'
-            }), 401
-        
-        return f(*args, **kwargs)
-    return decorated_function
-
-def log_push_notification(source_service, notification_type, bot_id=None, bot_username=None, status='received', processing_time=None, error_message=None, request_data=None):
-    """Log push notification to database"""
-    if not db:
-        return
-    
+# Dynamic Bot Token Management
+def get_bot_token_from_auth_service():
+    """Retrieve bot token from Auth Service"""
     try:
-        with app.app_context():
-            notification = PushNotification(
-                source_service=source_service,
-                notification_type=notification_type,
-                bot_id=bot_id,
-                bot_username=bot_username,
-                status=status,
-                processing_time=processing_time,
-                error_message=error_message,
-                request_data=json.dumps(request_data) if request_data else None
-            )
-            db.session.add(notification)
-            db.session.commit()
+        # Call Auth Service to get the current bot token
+        result = service_client.call_service(
+            'auth', 
+            '/api/bot/token',  # Endpoint to get current bot token
+            timeout=5,
+            log_interaction=False  # Don't log frequent token checks
+        )
+        
+        if result['success'] and result['data']:
+            token = result['data'].get('bot_token')
+            if token:
+                print(f"✅ Bot token retrieved from Auth Service")
+                return token
+            else:
+                print("⚠️ No bot token found in Auth Service response")
+                return None
+        else:
+            print(f"❌ Failed to retrieve bot token: {result.get('error', 'Unknown error')}")
+            return None
+            
     except Exception as e:
-        print(f"Push notification logging error: {e}")
+        print(f"❌ Error retrieving bot token from Auth Service: {e}")
+        return None
 
-def initialize_telegram_bot_with_token(bot_token, bot_username=None, bot_id=None):
+def initialize_telegram_bot_with_token(bot_token):
     """Initialize Telegram bot with provided token"""
-    global telegram_app, current_bot_token, current_bot_username, current_bot_id
+    global telegram_app
     
     if not bot_token:
         print("❌ No bot token provided for initialization")
-        return False
+        return None
     
     try:
-        print(f"🤖 Initializing Telegram bot...")
-        print(f"   Bot ID: {bot_id}")
-        print(f"   Bot Username: @{bot_username}")
-        print(f"   Token: {bot_token.split(':')[0]}:***")
-        
-        # Stop existing bot if running
-        if telegram_app:
-            print("🔄 Stopping existing bot...")
-            try:
-                # Note: In production, you might need to handle this differently
-                # depending on how your bot is running (polling vs webhook)
-                telegram_app = None
-            except Exception as e:
-                print(f"Warning: Error stopping existing bot: {e}")
-        
-        # Create application with the provided token
+        # Create application with the retrieved token
         telegram_app = Application.builder().token(bot_token).build()
         
         # Add handlers
         telegram_app.add_handler(CommandHandler("start", start_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         
-        # Update global state
-        current_bot_token = bot_token
-        current_bot_username = bot_username
-        current_bot_id = bot_id
-        
-        print(f"✅ Telegram bot initialized successfully!")
-        print(f"🎉 Bot @{bot_username} is now ready for giveaways!")
-        
-        return True
+        print(f"✅ Telegram bot initialized successfully with token: {bot_token[:10]}...")
+        return telegram_app
     
     except Exception as e:
         print(f"❌ Telegram bot initialization error: {e}")
-        return False
+        return None
 
-def stop_telegram_bot():
-    """Stop the current Telegram bot"""
-    global telegram_app, current_bot_token, current_bot_username, current_bot_id
+def check_and_update_bot_token():
+    """Check for bot token updates and reinitialize if needed"""
+    global current_bot_token, telegram_app, bot_token_last_check
     
-    try:
-        if telegram_app:
-            print("🛑 Stopping Telegram bot...")
-            # Note: In production, you might need to handle this differently
-            telegram_app = None
-            current_bot_token = None
-            current_bot_username = None
-            current_bot_id = None
-            print("✅ Bot stopped successfully")
-            return True
-        else:
-            print("ℹ️ No bot running to stop")
-            return True
-    except Exception as e:
-        print(f"❌ Error stopping bot: {e}")
-        return False
+    with bot_initialization_lock:
+        try:
+            # Get current bot token from Auth Service
+            new_token = get_bot_token_from_auth_service()
+            
+            # Update last check time
+            bot_token_last_check = datetime.now(timezone.utc)
+            
+            # Check if token has changed
+            if new_token != current_bot_token:
+                print(f"🔄 Bot token changed, reinitializing bot...")
+                
+                # Update current token
+                current_bot_token = new_token
+                
+                if new_token:
+                    # Initialize bot with new token
+                    telegram_app = initialize_telegram_bot_with_token(new_token)
+                    if telegram_app:
+                        print("✅ Bot reinitialized with new token")
+                        return True
+                    else:
+                        print("❌ Failed to reinitialize bot with new token")
+                        telegram_app = None
+                        return False
+                else:
+                    # No token available
+                    print("⚠️ No bot token available, bot disabled")
+                    telegram_app = None
+                    return False
+            else:
+                # Token unchanged
+                if new_token:
+                    print("✅ Bot token unchanged, bot operational")
+                    return True
+                else:
+                    print("⚠️ No bot token available")
+                    return False
+                    
+        except Exception as e:
+            print(f"❌ Error checking bot token: {e}")
+            return False
 
 def get_bot_status():
     """Get current bot status information"""
-    global current_bot_token, current_bot_username, current_bot_id, telegram_app, last_token_update
+    global current_bot_token, telegram_app, bot_token_last_check
     
     return {
         'token_configured': bool(current_bot_token),
         'bot_initialized': telegram_app is not None,
-        'bot_id': current_bot_id,
-        'bot_username': current_bot_username,
-        'token_source': 'push_notification',
-        'push_notifications_enabled': push_notifications_enabled,
-        'polling_disabled': True,
-        'last_token_update': last_token_update.isoformat() if last_token_update else None,
+        'token_source': 'auth_service',
+        'last_token_check': bot_token_last_check.isoformat() if bot_token_last_check else None,
         'webhook_url': WEBHOOK_URL
     }
 
-# Giveaway Helper Functions (same as previous phases)
+# Giveaway Helper Functions (same as Phase 6)
 def has_user_completed_captcha_globally(user_id):
     """Check if user has completed captcha globally"""
     try:
@@ -646,7 +617,7 @@ def get_participant_count(giveaway_id):
         print(f"Error getting participant count: {e}")
         return 0
 
-# Telegram Bot Handlers (same as previous phases, but with bot availability check)
+# Telegram Bot Handlers (same as Phase 6, but with bot availability check)
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command with giveaway and result parameters"""
     user_id = update.effective_user.id
@@ -984,9 +955,9 @@ async def handle_result_check(update: Update, context: ContextTypes.DEFAULT_TYPE
         print(f"❌ Result check error: {e}")
         await update.message.reply_text("❌ Error checking results. Please try again.")
 
-# Background task functions (optimized for push notification system)
+# Background task functions (enhanced with bot token checking)
 def update_service_status_cache():
-    """Background task to update service status cache (no longer checks bot token)"""
+    """Background task to update service status cache and check bot token"""
     global service_status_cache, last_cache_update
     
     task_start = time.time()
@@ -999,7 +970,7 @@ def update_service_status_cache():
                 task_record = BackgroundTask(
                     task_name=task_name,
                     status='running',
-                    details='Updating service status cache (push notification system)'
+                    details='Updating service status cache and checking bot token'
                 )
                 db.session.add(task_record)
                 db.session.commit()
@@ -1011,7 +982,10 @@ def update_service_status_cache():
         task_id = None
     
     try:
-        # Update service status cache (no bot token checking needed)
+        # Check and update bot token
+        bot_token_updated = check_and_update_bot_token()
+        
+        # Update service status cache
         new_status = {}
         
         for service_name in SERVICE_URLS.keys():
@@ -1054,12 +1028,12 @@ def update_service_status_cache():
                     if task_record:
                         task_record.status = 'completed'
                         task_record.execution_time = execution_time
-                        task_record.details = f'Updated status for {len(new_status)} services (push notification system)'
+                        task_record.details = f'Updated status for {len(new_status)} services, bot token: {"updated" if bot_token_updated else "unchanged"}'
                         db.session.commit()
             except Exception as e:
                 print(f"Task completion logging error: {e}")
         
-        print(f"Service status cache updated in {execution_time:.3f}s (push notification system)")
+        print(f"Service status cache updated in {execution_time:.3f}s (bot token: {'updated' if bot_token_updated else 'unchanged'})")
         
     except Exception as e:
         execution_time = time.time() - task_start
@@ -1124,11 +1098,6 @@ def cleanup_old_records():
                 BackgroundTask.timestamp.desc()
             ).offset(100).all()
             
-            # Keep only last 100 push notifications
-            old_notifications = PushNotification.query.order_by(
-                PushNotification.timestamp.desc()
-            ).offset(100).all()
-            
             # Clean up expired captcha challenges
             expired_captchas = CaptchaChallenge.query.filter(
                 CaptchaChallenge.expires_at < datetime.now(timezone.utc)
@@ -1141,7 +1110,7 @@ def cleanup_old_records():
             
             # Delete old records
             deleted_count = 0
-            for record_list in [old_interactions, old_health_checks, old_logs, old_tasks, old_notifications, expired_captchas, old_states]:
+            for record_list in [old_interactions, old_health_checks, old_logs, old_tasks, expired_captchas, old_states]:
                 for record in record_list:
                     db.session.delete(record)
                     deleted_count += 1
@@ -1182,7 +1151,7 @@ def cleanup_old_records():
 # Background scheduler
 scheduler = BackgroundScheduler()
 
-# Database helper functions (same as previous phases)
+# Database helper functions (same as Phase 6)
 def test_database_connection():
     """Test database connection safely"""
     if not db:
@@ -1233,7 +1202,7 @@ def log_to_database(level, message, endpoint=None):
         print(f"Database logging error: {e}")
         return False
 
-# Optimized service status functions (same as previous phases)
+# Optimized service status functions (same as Phase 6)
 def get_cached_service_status():
     """Get service status from cache (fast)"""
     global service_status_cache, last_cache_update
@@ -1258,10 +1227,10 @@ def get_cached_service_status():
 # Flask Routes
 @app.route('/')
 def home():
-    """Main service endpoint with cached service status and push notification bot status"""
+    """Main service endpoint with cached service status and dynamic bot status"""
     db_status = test_database_connection()
     service_status = get_cached_service_status()  # Use cached status for speed
-    bot_status = get_bot_status()  # Get push notification bot status
+    bot_status = get_bot_status()  # Get dynamic bot status
     
     # Log this request (async)
     log_to_database('INFO', 'Home endpoint accessed', '/')
@@ -1269,16 +1238,16 @@ def home():
     return jsonify({
         'service': 'telegive-bot-service',
         'status': 'working',
-        'version': '1.1.0-phase6-push-notifications',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
-        'message': 'Bot Service with instant push notification system for bot token management',
+        'version': '1.0.9-phase6-dynamic-token',
+        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
+        'message': 'Bot Service with dynamic Telegram bot token retrieval from Auth Service',
         'features': [
             'basic_endpoints', 'json_responses', 'error_handling', 
             'database_connection', 'optimized_service_integrations', 
             'service_status_caching', 'background_tasks', 'auth_service_token',
             'telegram_bot_integration', 'giveaway_participation_flow',
             'global_captcha_system', 'subscription_verification',
-            'push_notification_system', 'instant_bot_token_updates'
+            'dynamic_bot_token_retrieval'
         ],
         'database': {
             'configured': database_configured,
@@ -1288,14 +1257,8 @@ def home():
         'services': service_status,
         'telegram_bot': bot_status,
         'authentication': {
-            'service_to_service_secret': 'configured' if SERVICE_TO_SERVICE_SECRET else 'missing',
             'auth_service_token': 'configured' if AUTH_SERVICE_TOKEN else 'missing',
             'auth_header': AUTH_SERVICE_HEADER
-        },
-        'push_notifications': {
-            'enabled': push_notifications_enabled,
-            'polling_disabled': True,
-            'instant_updates': True
         },
         'cache_info': {
             'last_updated': last_cache_update.isoformat() if last_cache_update else None,
@@ -1308,185 +1271,6 @@ def home():
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'port': os.environ.get('PORT', 'not-set')
     })
-
-# Push Notification Endpoint - The Core of the New System
-@app.route('/bot/token/update', methods=['POST'])
-@authenticate_service_token
-def update_bot_token():
-    """Receive instant bot token updates from Auth Service via push notification"""
-    global last_token_update
-    
-    processing_start = time.time()
-    
-    try:
-        print("🔔 Push notification received from Auth Service")
-        
-        # Get request data
-        data = request.get_json()
-        source_service = request.headers.get('X-Service-Name', 'unknown')
-        
-        if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Invalid request',
-                'message': 'No JSON data provided'
-            }), 400
-        
-        bot_token = data.get('bot_token')
-        bot_username = data.get('bot_username')
-        bot_id = data.get('bot_id')
-        status = data.get('status', 'active')
-        
-        # Validate required fields
-        if not bot_id:
-            log_push_notification(
-                source_service=source_service,
-                notification_type='bot_token_update',
-                status='failed',
-                error_message='bot_id is required',
-                request_data=data
-            )
-            return jsonify({
-                'success': False,
-                'error': 'Invalid request',
-                'message': 'bot_id is required'
-            }), 400
-        
-        # Log notification received
-        log_push_notification(
-            source_service=source_service,
-            notification_type='bot_token_update' if bot_token else 'bot_token_removed',
-            bot_id=bot_id,
-            bot_username=bot_username,
-            status='received',
-            request_data=data
-        )
-        
-        previous_token = current_bot_token
-        
-        with bot_initialization_lock:
-            if status == 'removed' or not bot_token:
-                # Token removed - stop bot
-                print(f"🛑 Bot token removed for bot_id: {bot_id}")
-                
-                if stop_telegram_bot():
-                    processing_time = time.time() - processing_start
-                    last_token_update = datetime.now(timezone.utc)
-                    
-                    # Log successful processing
-                    log_push_notification(
-                        source_service=source_service,
-                        notification_type='bot_token_removed',
-                        bot_id=bot_id,
-                        bot_username=bot_username,
-                        status='processed',
-                        processing_time=processing_time
-                    )
-                    
-                    return jsonify({
-                        'success': True,
-                        'message': 'Bot token removed and bot stopped',
-                        'bot_initialized': False,
-                        'previous_token': f"{previous_token.split(':')[0]}:***" if previous_token else None,
-                        'new_token': None,
-                        'processing_time': processing_time
-                    })
-                else:
-                    processing_time = time.time() - processing_start
-                    
-                    # Log processing failure
-                    log_push_notification(
-                        source_service=source_service,
-                        notification_type='bot_token_removed',
-                        bot_id=bot_id,
-                        bot_username=bot_username,
-                        status='failed',
-                        processing_time=processing_time,
-                        error_message='Failed to stop bot'
-                    )
-                    
-                    return jsonify({
-                        'success': False,
-                        'error': 'Bot stop failed',
-                        'message': 'Failed to stop existing bot'
-                    }), 500
-            
-            # New/updated token - initialize bot
-            print(f"🚀 Initializing bot with new token for bot_id: {bot_id}")
-            print(f"   Bot username: @{bot_username}")
-            print(f"   Token: {bot_token.split(':')[0]}:***")
-            
-            # Initialize bot
-            bot_initialized = initialize_telegram_bot_with_token(bot_token, bot_username, bot_id)
-            
-            processing_time = time.time() - processing_start
-            last_token_update = datetime.now(timezone.utc)
-            
-            if bot_initialized:
-                print("✅ Bot initialized successfully via push notification")
-                
-                # Log successful processing
-                log_push_notification(
-                    source_service=source_service,
-                    notification_type='bot_token_update',
-                    bot_id=bot_id,
-                    bot_username=bot_username,
-                    status='processed',
-                    processing_time=processing_time
-                )
-                
-                return jsonify({
-                    'success': True,
-                    'message': 'Token updated successfully',
-                    'bot_initialized': True,
-                    'previous_token': f"{previous_token.split(':')[0]}:***" if previous_token else None,
-                    'new_token': f"{bot_token.split(':')[0]}:***",
-                    'processing_time': processing_time
-                })
-            else:
-                print("❌ Bot initialization failed")
-                
-                # Log processing failure
-                log_push_notification(
-                    source_service=source_service,
-                    notification_type='bot_token_update',
-                    bot_id=bot_id,
-                    bot_username=bot_username,
-                    status='failed',
-                    processing_time=processing_time,
-                    error_message='Bot initialization failed'
-                )
-                
-                return jsonify({
-                    'success': False,
-                    'error': 'Bot initialization failed',
-                    'message': 'Failed to initialize bot with provided token'
-                }), 500
-        
-    except Exception as e:
-        processing_time = time.time() - processing_start
-        error_message = str(e)
-        
-        print(f"❌ Push notification error: {error_message}")
-        
-        # Log processing error
-        try:
-            log_push_notification(
-                source_service=request.headers.get('X-Service-Name', 'unknown'),
-                notification_type='bot_token_update',
-                status='failed',
-                processing_time=processing_time,
-                error_message=error_message,
-                request_data=request.get_json() if request.is_json else None
-            )
-        except:
-            pass  # Don't fail on logging errors
-        
-        return jsonify({
-            'success': False,
-            'error': 'Internal server error',
-            'message': error_message
-        }), 500
 
 # Telegram webhook endpoint (enhanced with bot availability check)
 @app.route('/webhook', methods=['POST'])
@@ -1529,41 +1313,37 @@ def webhook():
         print(f"❌ Webhook error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Bot status endpoint (enhanced for push notification system)
+# Bot token management endpoints
+@app.route('/bot/token/refresh', methods=['POST'])
+def refresh_bot_token():
+    """Manually refresh bot token from Auth Service"""
+    try:
+        success = check_and_update_bot_token()
+        bot_status = get_bot_status()
+        
+        return jsonify({
+            'message': 'Bot token refresh completed',
+            'success': success,
+            'bot_status': bot_status,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to refresh bot token',
+            'details': str(e),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 500
+
 @app.route('/bot/status')
-@authenticate_service_token
 def bot_status_endpoint():
-    """Get detailed bot status information for push notification system"""
+    """Get detailed bot status information"""
     try:
         bot_status = get_bot_status()
         
-        # Add push notification statistics
-        if db:
-            try:
-                with app.app_context():
-                    total_notifications = PushNotification.query.count()
-                    successful_notifications = PushNotification.query.filter_by(status='processed').count()
-                    failed_notifications = PushNotification.query.filter_by(status='failed').count()
-                    recent_notifications = PushNotification.query.filter(
-                        PushNotification.timestamp > datetime.now(timezone.utc) - timedelta(hours=24)
-                    ).count()
-                    
-                    bot_status['push_notification_stats'] = {
-                        'total_notifications': total_notifications,
-                        'successful_notifications': successful_notifications,
-                        'failed_notifications': failed_notifications,
-                        'recent_notifications_24h': recent_notifications,
-                        'success_rate': (successful_notifications / total_notifications * 100) if total_notifications > 0 else 0
-                    }
-            except Exception as e:
-                bot_status['push_notification_stats'] = {'error': str(e)}
-        
-        # Add service configuration
-        bot_status['service_configuration'] = {
-            'service_to_service_secret_configured': bool(SERVICE_TO_SERVICE_SECRET),
-            'auth_service_url': SERVICE_URLS['auth'],
-            'webhook_url': WEBHOOK_URL
-        }
+        # Add additional status information
+        bot_status['auth_service_url'] = SERVICE_URLS['auth']
+        bot_status['auth_service_token_configured'] = bool(AUTH_SERVICE_TOKEN)
         
         return jsonify({
             'bot_status': bot_status,
@@ -1577,74 +1357,7 @@ def bot_status_endpoint():
             'timestamp': datetime.now(timezone.utc).isoformat()
         }), 500
 
-# Push notification statistics endpoint
-@app.route('/push/stats')
-@authenticate_service_token
-def push_notification_stats():
-    """Get push notification statistics"""
-    try:
-        if not db:
-            return jsonify({'error': 'Database not available'}), 503
-        
-        with app.app_context():
-            # Get statistics
-            total_notifications = PushNotification.query.count()
-            successful_notifications = PushNotification.query.filter_by(status='processed').count()
-            failed_notifications = PushNotification.query.filter_by(status='failed').count()
-            
-            # Recent notifications (last 24 hours)
-            recent_notifications = PushNotification.query.filter(
-                PushNotification.timestamp > datetime.now(timezone.utc) - timedelta(hours=24)
-            ).all()
-            
-            # Average processing time
-            processed_notifications = PushNotification.query.filter(
-                PushNotification.status == 'processed',
-                PushNotification.processing_time.isnot(None)
-            ).all()
-            
-            avg_processing_time = sum(n.processing_time for n in processed_notifications) / len(processed_notifications) if processed_notifications else 0
-            
-            # Recent notifications details
-            recent_details = []
-            for notification in recent_notifications[-10:]:  # Last 10
-                recent_details.append({
-                    'timestamp': notification.timestamp.isoformat(),
-                    'source_service': notification.source_service,
-                    'notification_type': notification.notification_type,
-                    'bot_id': notification.bot_id,
-                    'bot_username': notification.bot_username,
-                    'status': notification.status,
-                    'processing_time': notification.processing_time,
-                    'error_message': notification.error_message
-                })
-            
-            return jsonify({
-                'push_notification_statistics': {
-                    'total_notifications': total_notifications,
-                    'successful_notifications': successful_notifications,
-                    'failed_notifications': failed_notifications,
-                    'success_rate': (successful_notifications / total_notifications * 100) if total_notifications > 0 else 0,
-                    'average_processing_time': avg_processing_time,
-                    'recent_notifications_24h': len(recent_notifications)
-                },
-                'recent_notifications': recent_details,
-                'system_status': {
-                    'push_notifications_enabled': push_notifications_enabled,
-                    'polling_disabled': True,
-                    'instant_updates': True
-                },
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            })
-    
-    except Exception as e:
-        return jsonify({
-            'error': 'Failed to get push notification statistics',
-            'details': str(e),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 500
-
-# Giveaway management endpoints (same as previous phases)
+# Giveaway management endpoints (same as Phase 6)
 @app.route('/giveaway/stats')
 def giveaway_stats():
     """Get giveaway participation statistics"""
@@ -1663,11 +1376,6 @@ def giveaway_stats():
                     'captcha_completions': captcha_completions
                 },
                 'telegram_bot': get_bot_status(),
-                'push_notification_system': {
-                    'enabled': push_notifications_enabled,
-                    'instant_updates': True,
-                    'polling_disabled': True
-                },
                 'timestamp': datetime.now(timezone.utc).isoformat()
             })
     
@@ -1790,7 +1498,7 @@ def distribute_giveaway_results(giveaway_id):
             'timestamp': datetime.now(timezone.utc).isoformat()
         }), 500
 
-# Error handlers (same as previous phases)
+# Error handlers (same as Phase 6)
 @app.errorhandler(404)
 def not_found(error):
     """Handle 404 errors with JSON response and async logging"""
@@ -1799,9 +1507,9 @@ def not_found(error):
     return jsonify({
         'error': 'Not Found',
         'message': 'The requested endpoint does not exist',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
+        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
         'available_endpoints': [
-            '/', '/webhook', '/bot/token/update', '/bot/status', '/push/stats',
+            '/', '/webhook', '/bot/token/refresh', '/bot/status',
             '/giveaway/stats', '/giveaway/<id>/participants', 
             '/giveaway/<id>/distribute-results'
         ],
@@ -1816,7 +1524,7 @@ def internal_error(error):
     return jsonify({
         'error': 'Internal Server Error',
         'message': 'An internal error occurred',
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
+        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
@@ -1834,13 +1542,13 @@ def handle_exception(error):
     return jsonify({
         'error': type(error).__name__,
         'message': str(error),
-        'phase': 'Phase 6 - Push Notification System for Instant Bot Token Updates',
+        'phase': 'Phase 6 - Dynamic Bot Token from Auth Service',
         'timestamp': datetime.now(timezone.utc).isoformat()
     }), 500
 
 # Initialize database and background tasks on startup
 def init_application():
-    """Initialize database and background tasks on startup (no bot token checking needed)"""
+    """Initialize database, background tasks, and check for bot token on startup"""
     if db:
         try:
             with app.app_context():
@@ -1850,7 +1558,7 @@ def init_application():
                 # Log startup
                 startup_log = ServiceLog(
                     level='INFO',
-                    message='Bot Service Phase 6 started with push notification system for instant bot token updates',
+                    message='Bot Service Phase 6 started with dynamic bot token retrieval from Auth Service',
                     endpoint='startup'
                 )
                 db.session.add(startup_log)
@@ -1860,18 +1568,19 @@ def init_application():
         except Exception as e:
             print(f"Database initialization error: {e}")
     
-    # No bot token checking needed - push notifications will handle this
-    print("🔔 Push notification system ready for instant bot token updates")
+    # Check for bot token from Auth Service
+    print("🔍 Checking for bot token from Auth Service...")
+    check_and_update_bot_token()
     
-    # Start background scheduler (no bot token checking job needed)
+    # Start background scheduler
     try:
         if not scheduler.running:
-            # Add background jobs (no bot token checking needed)
+            # Add background jobs (enhanced with bot token checking)
             scheduler.add_job(
                 func=update_service_status_cache,
-                trigger=IntervalTrigger(minutes=5),  # Less frequent since no bot token checking
+                trigger=IntervalTrigger(minutes=2),  # Update every 2 minutes
                 id='update_service_status',
-                name='Update Service Status Cache (Push Notification System)',
+                name='Update Service Status Cache and Check Bot Token',
                 replace_existing=True
             )
             
@@ -1884,7 +1593,7 @@ def init_application():
             )
             
             scheduler.start()
-            print("Background scheduler started successfully (push notification system)")
+            print("Background scheduler started successfully")
             
             # Initial cache update
             update_service_status_cache()
@@ -1899,7 +1608,7 @@ if __name__ != '__main__':
 # For development testing only
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Bot Service Phase 6 (Push Notifications) on port {port}")
+    print(f"Starting Bot Service Phase 6 (Dynamic Token) on port {port}")
     
     # Initialize for development
     with app.app_context():
@@ -1909,7 +1618,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Development database error: {e}")
     
-    # Start scheduler
+    # Start scheduler and check for bot token
     init_application()
     
     app.run(host='0.0.0.0', port=port, debug=False)
